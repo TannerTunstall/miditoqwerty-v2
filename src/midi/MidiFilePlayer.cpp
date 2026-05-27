@@ -152,7 +152,8 @@ void MidiFilePlayer::dispatch(const Event& e) {
         outData2 = (uint8_t)scaled;
 
         if (piano) piano->down((int)e.data1, (int)outData2);
-    } else if (cmd == 0x80) {
+    } else if (cmd == 0x80 || (cmd == 0x90 && e.data2 == 0)) {
+        // Explicit NoteOff, or running-status NoteOff (NoteOn velocity=0).
         if (piano) piano->up((int)e.data1);
     }
 

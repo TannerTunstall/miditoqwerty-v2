@@ -138,11 +138,32 @@ MacInputBackend::MacInputBackend() {
     }
 }
 
+// Why explicit modifier press/release instead of CGEventSetFlags:
+//
+// Roblox on macOS does NOT honour synthetic modifier flags set via
+// kCGEventFlagMaskShift / kCGEventFlagMaskControl / kCGEventFlagMaskAlternate
+// on a CGEvent. It only observes the actual keyboard-modifier state derived
+// from real Shift / Control / Option key events. If we just slap a flag on
+// the event, Roblox sees the bare character — e.g. our '!' arrives as '1',
+// which on Virtual Piano means the sharp gets stripped. C♯ minor played
+// that way sounds like C major.
+//
+// So we mirror the Windows backend pattern: send the modifier key down,
+// send the character key, send the modifier key up. For chord operations
+// (Ctrl + letter, Alt + char) the character is then released too; for the
+// per-note sendKeyDown the character is left held, with sendKeyUp dropping
+// it later, exactly like the Windows code in inpututils.cpp does.
+
 void MacInputBackend::sendKeyDown(char c) {
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    CGEventFlags flags = k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0;
-    postKey(k.code, true, flags);
+    if (k.shift) {
+        postKey((CGKeyCode)kVK_Shift, true, 0);
+        postKey(k.code, true, kCGEventFlagMaskShift);
+        postKey((CGKeyCode)kVK_Shift, false, 0);
+    } else {
+        postKey(k.code, true, 0);
+    }
 }
 
 void MacInputBackend::sendKeyUp(char c, char /*location*/) {
@@ -150,27 +171,33 @@ void MacInputBackend::sendKeyUp(char c, char /*location*/) {
     // was shifted or not, so we don't need findIndex-style char translation.
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    postKey(k.code, false, (CGEventFlags)0);
+    postKey(k.code, false, 0);
 }
 
 void MacInputBackend::sendOutOfRangeKey(char c) {
-    // Virtual Piano "Ctrl + letter" → temporary chord, full press-release.
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    CGEventFlags flags = kCGEventFlagMaskControl |
-                         (k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0);
-    postKey(k.code, true, flags);
-    postKey(k.code, false, flags);
+    postKey((CGKeyCode)kVK_Control, true, 0);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0);
+    CGEventFlags f = kCGEventFlagMaskControl |
+                     (k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0);
+    postKey(k.code, true,  f);
+    postKey(k.code, false, f);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, false, 0);
+    postKey((CGKeyCode)kVK_Control, false, 0);
 }
 
 void MacInputBackend::setVelocity(char c) {
-    // Virtual Piano "Alt (Option) + char" → velocity-bucket selector.
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    CGEventFlags flags = kCGEventFlagMaskAlternate |
-                         (k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0);
-    postKey(k.code, true, flags);
-    postKey(k.code, false, flags);
+    postKey((CGKeyCode)kVK_Option, true, 0);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0);
+    CGEventFlags f = kCGEventFlagMaskAlternate |
+                     (k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0);
+    postKey(k.code, true,  f);
+    postKey(k.code, false, f);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, false, 0);
+    postKey((CGKeyCode)kVK_Option, false, 0);
 }
 
 std::vector<std::string> MacInputBackend::availableModes() const {

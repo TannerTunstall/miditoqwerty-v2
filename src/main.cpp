@@ -139,8 +139,11 @@ void pollCallback(PmTimestamp timestamp, uint8_t status, PmMessage Data1, PmMess
     // Display always reflects the keyboard; output gating happens in NoteRouter.
     const bool isNoteOn  = (status >= 0x90 && status <= 0x9F);
     const bool isNoteOff = (status >= 0x80 && status <= 0x8F);
-    if (isNoteOn)  piano.down((int)Data1, (int)Data2);
-    if (isNoteOff) piano.up((int)Data1);
+    // NoteOn with velocity 0 is the standard "running-status NoteOff" — every
+    // SMF file uses this convention. Without treating it as a release the
+    // piano-display key never clears and the whole keyboard turns red.
+    if (isNoteOn && Data2 > 0)        piano.down((int)Data1, (int)Data2);
+    if (isNoteOff || (isNoteOn && Data2 == 0)) piano.up((int)Data1);
 
     if (noteRouter) noteRouter->onMidiEvent(timestamp, status, Data1, Data2);
 }
