@@ -21,7 +21,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-find_package(SDL2 REQUIRED)
+# SDL2 lookup
+#   macOS / Linux: brew (or distro) installs SDL2 with a CMake config; let
+#       find_package locate it.
+#   Windows: the SDL2-devel-VC release does NOT ship SDL2Config.cmake, but
+#       does include the libs + headers under SDL2_DIR. Skip find_package when
+#       SDL2_DIR is set, and trust the manual paths used later for linking.
+if(WIN32 AND DEFINED SDL2_DIR AND NOT "${SDL2_DIR}" STREQUAL "")
+    if(NOT EXISTS "${SDL2_DIR}/include/SDL.h")
+        message(FATAL_ERROR "SDL2_DIR='${SDL2_DIR}' has no include/SDL.h — check the path.")
+    endif()
+    set(SDL2_INCLUDE_DIRS "${SDL2_DIR}/include")
+    message(STATUS "Using SDL2 from manually-set SDL2_DIR: ${SDL2_DIR}")
+else()
+    find_package(SDL2 REQUIRED)
+endif()
+
 find_package(PortMidi REQUIRED)
 
 # craigsapp/midifile: SMF parser used by the built-in file player. Pinned by
@@ -32,24 +47,34 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 set(BUILD_MIDILIBRARY_ONLY ON CACHE BOOL "" FORCE)
 add_subdirectory(midifile)
 
-# Generate gl3w headers and sources (runs the submodule's own CMake). The
-# submodule pins to CMake 2.x compatibility which modern CMake refuses by
-# default, and uses the removed FindPythonInterp module — re-allow the
-# legacy policy version and feed PYTHON_EXECUTABLE through ourselves.
-find_program(PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
-execute_process(
-    COMMAND ${CMAKE_COMMAND}
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-        -DPYTHON_EXECUTABLE=${PYTHON3_EXECUTABLE}
-        .
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/gl3w)
-execute_process(
-    COMMAND ${CMAKE_COMMAND} --build .
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/gl3w)
-
-set(gl3w_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gl3w/include)
-add_library(gl3w ${CMAKE_CURRENT_SOURCE_DIR}/gl3w/src/gl3w.c)
-target_include_directories(gl3w PUBLIC ${gl3w_INCLUDE_DIR})
+# gl3w sources
+#   Prefer pre-generated files vendored under vendor/gl3w/ (so CI doesn't
+#   depend on Khronos's registry being reachable — they started returning 403
+#   for the urllib-based gl3w_gen.py download in 2026). Fall back to invoking
+#   the submodule's generator only if the vendored files are absent.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/vendor/gl3w/src/gl3w.c)
+    set(gl3w_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/gl3w/include)
+    add_library(gl3w ${CMAKE_CURRENT_SOURCE_DIR}/vendor/gl3w/src/gl3w.c)
+    target_include_directories(gl3w PUBLIC ${gl3w_INCLUDE_DIR})
+    message(STATUS "Using vendored gl3w from vendor/gl3w/")
+else()
+    # Legacy path: run the submodule's generator. Will fail with HTTP 403 on
+    # current Khronos registry — kept as a fallback if someone wants to
+    # regenerate locally.
+    find_program(PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND}
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            -DPYTHON_EXECUTABLE=${PYTHON3_EXECUTABLE}
+            .
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/gl3w)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} --build .
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/gl3w)
+    set(gl3w_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gl3w/include)
+    add_library(gl3w ${CMAKE_CURRENT_SOURCE_DIR}/gl3w/src/gl3w.c)
+    target_include_directories(gl3w PUBLIC ${gl3w_INCLUDE_DIR})
+endif()
 
 add_definitions(-DIMGUI_IMPL_OPENGL_LOADER_GL3W)
 if(NOT MSVC)
