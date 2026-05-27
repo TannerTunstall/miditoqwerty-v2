@@ -26,8 +26,11 @@ public:
 
     // Mode selection. Available modes are platform-specific:
     //   Windows: ["Off (OS-aware)", "Set 1", "Set 2", "QWERTZ"]
-    //   macOS:   ["Off (OS-aware)", "Emulator"]
+    //   macOS:   ["Native (kVK)"]
     virtual std::vector<std::string> availableModes() const = 0;
+    // Parallel to availableModes(); empty string for "no tooltip". The UI
+    // surfaces these as hover-tooltips on each mode in the dropdown.
+    virtual std::vector<std::string> modeTooltips() const { return {}; }
     virtual void setMode(int modeIndex) = 0;
     virtual int currentMode() const = 0;
 

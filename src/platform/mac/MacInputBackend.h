@@ -16,6 +16,7 @@ public:
     void setVelocity(char c) override;
 
     std::vector<std::string> availableModes() const override;
+    std::vector<std::string> modeTooltips() const override;
     void setMode(int modeIndex) override;
     int currentMode() const override;
 

@@ -176,9 +176,16 @@ void MacInputBackend::setVelocity(char c) {
 std::vector<std::string> MacInputBackend::availableModes() const {
     // macOS collapses Windows' Set 1 / Set 2 / QWERTZ into a single mode
     // because CGKeyCode is already physical-position (layout-bypass). The
-    // existing "OS-aware" Windows mode would be UCKeyTranslate-based on Mac;
+    // Windows-style OS-aware mode would be UCKeyTranslate-based on Mac;
     // not implemented yet because Roblox needs the physical-position path.
     return { "Native (kVK)" };
+}
+
+std::vector<std::string> MacInputBackend::modeTooltips() const {
+    return {
+        "Physical-position keys (kVK_ANSI_*), layout-bypass.\n"
+        "Equivalent to Windows Set 1; what Roblox expects."
+    };
 }
 
 void MacInputBackend::setMode(int /*modeIndex*/) {

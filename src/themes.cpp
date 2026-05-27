@@ -50,11 +50,13 @@ bool ShowThemeSelector(const char* label, std::string& output) {
     static std::vector<std::string> themes;
 
     if (!gotThemes) {
-        for (auto& p : std::filesystem::recursive_directory_iterator("themes"))
-        {
-            if (p.path().extension() == ".theme") {
-                printf("Got theme %s\n", p.path().stem().string().c_str());
-                themes.push_back(p.path().stem().string());
+        if (std::filesystem::exists("themes") && std::filesystem::is_directory("themes")) {
+            for (auto& p : std::filesystem::recursive_directory_iterator("themes"))
+            {
+                if (p.path().extension() == ".theme") {
+                    printf("Got theme %s\n", p.path().stem().string().c_str());
+                    themes.push_back(p.path().stem().string());
+                }
             }
         }
         gotThemes = true;

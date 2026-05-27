@@ -36,6 +36,16 @@ std::vector<std::string> WindowsInputBackend::availableModes() const {
     return { "Off (OS-aware)", "Set 1", "Set 2", "QWERTZ" };
 }
 
+std::vector<std::string> WindowsInputBackend::modeTooltips() const {
+    // Preserved from the original main.cpp Settings combo.
+    return {
+        "Consults Windows and your keyboard layout,\nuseful for playing outside of Roblox",
+        "This should be your go-to setting for Roblox",
+        "Use this if your keyboard doesn't\nproperly support Set 1",
+        "This is like Set 1, but swaps Y with Z",
+    };
+}
+
 void WindowsInputBackend::setMode(int modeIndex) {
     mode = modeIndex;
     // Mirror legacy scanSetChoice mapping from setEmulatorFunctions().

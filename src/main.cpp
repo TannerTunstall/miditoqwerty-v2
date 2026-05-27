@@ -50,9 +50,12 @@ std::string defaultTheme;
 std::string currentFont;
 std::string currentTheme;
 
-ImVec4 gBackgroundColor;
-ImVec4 gNoteColor;
-ImVec4 gNoteNameColor;
+// Defaults match ImGui's StyleColorsDark so the UI is legible even when no
+// themes/default.theme file is on disk (LoadTheme silently no-ops in that
+// case). Real values get overwritten when a theme loads successfully.
+ImVec4 gBackgroundColor = ImVec4(0.06f, 0.06f, 0.06f, 1.00f);
+ImVec4 gNoteColor       = ImVec4(0.96f, 0.16f, 0.16f, 1.00f);
+ImVec4 gNoteNameColor   = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
 
 static int showTitlebar = 1;
 static int windowOpacity = 100;
@@ -168,7 +171,9 @@ int main(int argc, char* argv[]) {
     settingsHandler.AddSetting("QWERTY emulation", &qwertyEmulator);
 
     if (midi.deviceID < 0) {
-        std::exit(2);
+        printf("No MIDI input device found at startup. The app will launch "
+               "anyway — attach one later from the Settings > MIDI Input combo, "
+               "or use the built-in file player (Stage 2).\n");
     }
 
     fflush(stdout);
@@ -178,12 +183,22 @@ int main(int argc, char* argv[]) {
         printf("Error: %s\n", SDL_GetError());
         return -1;
     }
-    // GL 3.0 + GLSL 130
+#ifdef __APPLE__
+    // macOS Core profile only supports OpenGL 3.2+, which requires GLSL 150
+    // (Core profile rejects GLSL 130). Forward-compatible flag is required.
+    const char* glsl_version = "#version 150";
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
+    // Original behaviour: GL 3.0 + GLSL 130, Core profile (works on Windows).
     const char* glsl_version = "#version 130";
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
 
     // Create window with graphics context
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
@@ -237,22 +252,28 @@ int main(int argc, char* argv[]) {
 
     fflush(stdout);
 
-    // Load fonts
-    for (auto& p : std::filesystem::recursive_directory_iterator("fonts"))
-    {
-        if (p.path().extension() == ".ttf") {
+    // Load fonts. The original release ships a fonts/ directory alongside the
+    // binary; tolerate it being absent (built-from-source case) so we don't
+    // throw out of recursive_directory_iterator on launch.
+    if (std::filesystem::exists("fonts") && std::filesystem::is_directory("fonts")) {
+        for (auto& p : std::filesystem::recursive_directory_iterator("fonts"))
+        {
+            if (p.path().extension() == ".ttf") {
 
-            std::string relativePath = p.path().stem().string();
-            if (relativePath == defaultFont) continue;
+                std::string relativePath = p.path().stem().string();
+                if (relativePath == defaultFont) continue;
 
-            std::string fullPath = "fonts/" + relativePath + ".ttf";
+                std::string fullPath = "fonts/" + relativePath + ".ttf";
 
-            if (fullPath == initializedFont) continue;
+                if (fullPath == initializedFont) continue;
 
-            printf("Font found: %s\n", fullPath.c_str());
+                printf("Font found: %s\n", fullPath.c_str());
 
-            ImGui::GetIO().Fonts->AddFontFromFileTTF(fullPath.c_str(), 13);
+                ImGui::GetIO().Fonts->AddFontFromFileTTF(fullPath.c_str(), 13);
+            }
         }
+    } else {
+        printf("No fonts/ directory found; using ImGui default font only.\n");
     }
 
     fflush(stdout);
@@ -405,7 +426,7 @@ int main(int argc, char* argv[]) {
             }
 
             ImGui::Text("Opacity");
-            if (ImGui::SliderInt("##", &windowOpacity, 10, 100, "%d%%")) {
+            if (ImGui::SliderInt("##opacity", &windowOpacity, 10, 100, "%d%%")) {
                 logger.AddLog("Setting opacity to %d\n", windowOpacity);
                 SDL_SetWindowOpacity(window, (float)windowOpacity / 100);
             }
@@ -468,7 +489,7 @@ int main(int argc, char* argv[]) {
             ImGui::Checkbox("Sustain", (bool*)& sustain);
 
             ImGui::Text("Sustain cutoff");
-            ImGui::SliderInt("", &sustainCutoff, 0, 127);
+            ImGui::SliderInt("##sustain_cutoff", &sustainCutoff, 0, 127);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("CTRL + Click to enter a value,\ndefault is 64");
             }
@@ -477,12 +498,7 @@ int main(int argc, char* argv[]) {
 
             static bool foundDevice = false;
             auto did = Pm_GetDefaultInputDeviceID();
-            if (did < 0) {
-                std::cout << "Couldn't find any MIDI devices for input."
-                    << std::endl;
-                return did;
-            }
-            else if(!foundDevice) {
+            if (did >= 0 && !foundDevice) {
                 logger.AddLog("Opened MIDI device %s\n", Pm_GetDeviceInfo(did)->name);
                 foundDevice = true;
             }
@@ -491,6 +507,7 @@ int main(int argc, char* argv[]) {
             // expose their own mode lists without inline branching.
             ImGui::Text("QWERTY Emulator");
             const auto modes = input->availableModes();
+            const auto tooltips = input->modeTooltips();
             if (qwertyEmulator < 0 || qwertyEmulator >= (int)modes.size()) qwertyEmulator = 0;
             if (ImGui::BeginCombo("Mode", modes[qwertyEmulator].c_str())) {
                 for (int i = 0; i < (int)modes.size(); ++i) {
@@ -498,6 +515,9 @@ int main(int argc, char* argv[]) {
                     if (ImGui::Selectable(modes[i].c_str(), is_selected)) {
                         qwertyEmulator = i;
                         applyBackendMode();
+                    }
+                    if (i < (int)tooltips.size() && !tooltips[i].empty() && ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("%s", tooltips[i].c_str());
                     }
                     if (is_selected) ImGui::SetItemDefaultFocus();
                 }
@@ -508,18 +528,31 @@ int main(int argc, char* argv[]) {
             }
 
             ImGui::Text("MIDI Input");
-            PmDeviceID selectedDevice = did;
-            static const char* selectedDeviceName = Pm_GetDeviceInfo(did)->name;
-            if (ImGui::BeginCombo("Port", selectedDeviceName)) {
-                for (int i = 0; i < Pm_CountDevices() - 1; i++) {
+            static const char* selectedDeviceName =
+                (did >= 0) ? Pm_GetDeviceInfo(did)->name : "(no device)";
+            // Keep the displayed label in sync if the user changed device via
+            // the combo on a previous frame, or if a device appeared since startup.
+            if (midi.deviceID >= 0) {
+                selectedDeviceName = Pm_GetDeviceInfo(midi.deviceID)->name;
+            }
+
+            if (Pm_CountDevices() == 0) {
+                ImGui::TextColored(ImVec4(0.95f, 0.7f, 0.2f, 1.0f),
+                    "No MIDI input devices detected.");
+                ImGui::TextWrapped(
+                    "Plug in a USB MIDI keyboard, or enable IAC Driver in "
+                    "Audio MIDI Setup, then restart this app to see it here.");
+            } else if (ImGui::BeginCombo("Port", selectedDeviceName)) {
+                for (int i = 0; i < Pm_CountDevices(); i++) {
                     const PmDeviceInfo* deviceInfo = Pm_GetDeviceInfo(i);
-                    if (deviceInfo->input == 0) continue;
-                    bool is_selected = (selectedDeviceName == Pm_GetDeviceInfo(selectedDevice)->name);
+                    if (!deviceInfo || deviceInfo->input == 0) continue;
+                    bool is_selected = (midi.deviceID == i);
 
                     if (ImGui::Selectable(deviceInfo->name, is_selected)) {
                         std::cout << "Changed to " << deviceInfo->name << '\n';
                         selectedDeviceName = deviceInfo->name;
-                        midi.shutdown(midi.stream);
+                        if (midi.stream) midi.shutdown(midi.stream);
+                        midi.stream = nullptr;
                         midi.deviceID = i;
                         midi.InitWrapper();
                         logger.AddLog("Opened MIDI device %s\n", selectedDeviceName);
