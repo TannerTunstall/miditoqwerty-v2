@@ -25,6 +25,7 @@
 #include "platform/IInputBackend.h"
 #include "platform/IHotkeyService.h"
 #include "platform/overlay.h"
+#include "platform/file_dialog.h"
 #include "core/NoteRouter.h"
 #include "midi/MidiFilePlayer.h"
 
@@ -145,7 +146,9 @@ void pollCallback(PmTimestamp timestamp, uint8_t status, PmMessage Data1, PmMess
 }
 
 int main(int argc, char* argv[]) {
-    (void)argc; (void)argv;
+    // Optional first-positional arg: path to a .mid to auto-load on startup.
+    // Supports drag-and-drop on the binary and CLI testing.
+    const char* autoLoadPath = (argc > 1) ? argv[1] : nullptr;
 
 #ifdef _WIN32
     // GUI subsystem on Windows has no usable stdout; redirect to log.txt as
@@ -159,6 +162,14 @@ int main(int argc, char* argv[]) {
     noteRouter = std::make_unique<NoteRouter>(input.get(), &logger);
     noteRouter->bindSettings(&enableOutput, &eightyeightkey, &sustain, &velocity, &sustainCutoff);
     filePlayer = std::make_unique<MidiFilePlayer>(noteRouter.get(), &piano, &logger);
+
+    if (autoLoadPath) {
+        if (filePlayer->load(autoLoadPath)) {
+            printf("Auto-loaded: %s (%.2fs)\n", autoLoadPath, filePlayer->durationSeconds());
+        } else {
+            printf("Auto-load failed for: %s\n", autoLoadPath);
+        }
+    }
 
     settingsHandler.AddSetting("Always on top", &alwaysontop);
     settingsHandler.AddSetting("Editable windows", &windowsEditable);
@@ -648,7 +659,17 @@ int main(int argc, char* argv[]) {
             ImGui::Begin("Player", NULL, POSSIBLYEDITABLE);
 
             static char pathBuf[1024] = {0};
-            ImGui::PushItemWidth(-90.0f);
+            if (ImGui::Button("Browse...")) {
+                std::string picked = platform::openMidiFileDialog(window);
+                if (!picked.empty()) {
+                    std::snprintf(pathBuf, sizeof(pathBuf), "%s", picked.c_str());
+                    if (!filePlayer->load(pathBuf)) {
+                        logger.AddLog("Player: failed to load %s\n", pathBuf);
+                    }
+                }
+            }
+            ImGui::SameLine();
+            ImGui::PushItemWidth(-50.0f);
             ImGui::InputText("##player_path", pathBuf, sizeof(pathBuf));
             ImGui::PopItemWidth();
             ImGui::SameLine();

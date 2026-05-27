@@ -96,12 +96,14 @@ if(WIN32)
         src/platform/win/WindowsInputBackend.cpp
         src/platform/win/WindowsOverlay.cpp
         src/platform/win/WindowsHotkey.cpp
+        src/platform/win/WindowsFileDialog.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/res/resource.rc)
 elseif(APPLE)
     list(APPEND MTQ_PLATFORM_SOURCES
         src/platform/mac/MacInputBackend.mm
         src/platform/mac/MacOverlay.mm
-        src/platform/mac/MacHotkey.mm)
+        src/platform/mac/MacHotkey.mm
+        src/platform/mac/MacFileDialog.mm)
 endif()
 
 # --- Executable -------------------------------------------------------------
@@ -119,6 +121,8 @@ elseif(APPLE)
     set_source_files_properties(src/platform/mac/MacOverlay.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     set_source_files_properties(src/platform/mac/MacHotkey.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(src/platform/mac/MacFileDialog.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
     add_executable(miditoqwerty
@@ -140,6 +144,7 @@ if(WIN32)
         imgui
         gl3w
         midifile
+        comdlg32                  # GetOpenFileNameA
         ${CMAKE_DL_LIBS})
 elseif(APPLE)
     find_library(COCOA_FRAMEWORK Cocoa)

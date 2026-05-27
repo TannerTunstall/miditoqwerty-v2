@@ -10,3 +10,7 @@ build/
 CLAUDE.md
 PLAN.md
 docs/
+
+# Local test assets
+*.mid
+*.midi
