@@ -3,6 +3,7 @@
 #include "MacInputBackend.h"
 
 #include <cstdio>
+#include <AppKit/AppKit.h>     // NSWorkspace / NSRunningApplication
 #include <ApplicationServices/ApplicationServices.h>
 #include <Carbon/Carbon.h>
 #include <Foundation/Foundation.h>
@@ -106,11 +107,19 @@ KeyInfo lookupKey(char c) {
     }
 }
 
-void postKey(CGKeyCode code, bool keyDown, CGEventFlags flags) {
+void postKey(CGKeyCode code, bool keyDown, CGEventFlags flags, int targetPid) {
     CGEventRef ev = CGEventCreateKeyboardEvent(NULL, code, keyDown);
     if (!ev) return;
     if (flags) CGEventSetFlags(ev, flags);
-    CGEventPost(kCGHIDEventTap, ev);
+    if (targetPid > 0) {
+        // Delivers directly to the target process and bypasses the system
+        // event flow — Roblox sees the raw chord (e.g. Option+5) instead of
+        // the Unicode composition macOS would normally substitute.
+        CGEventPostToPid((pid_t)targetPid, ev);
+    } else {
+        // Active-foreground path: same as before, lands wherever focus is.
+        CGEventPost(kCGHIDEventTap, ev);
+    }
     CFRelease(ev);
 }
 
@@ -158,11 +167,11 @@ void MacInputBackend::sendKeyDown(char c) {
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
     if (k.shift) {
-        postKey((CGKeyCode)kVK_Shift, true, 0);
-        postKey(k.code, true, kCGEventFlagMaskShift);
-        postKey((CGKeyCode)kVK_Shift, false, 0);
+        postKey((CGKeyCode)kVK_Shift, true, 0, targetPid);
+        postKey(k.code, true, kCGEventFlagMaskShift, targetPid);
+        postKey((CGKeyCode)kVK_Shift, false, 0, targetPid);
     } else {
-        postKey(k.code, true, 0);
+        postKey(k.code, true, 0, targetPid);
     }
 }
 
@@ -171,33 +180,33 @@ void MacInputBackend::sendKeyUp(char c, char /*location*/) {
     // was shifted or not, so we don't need findIndex-style char translation.
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    postKey(k.code, false, 0);
+    postKey(k.code, false, 0, targetPid);
 }
 
 void MacInputBackend::sendOutOfRangeKey(char c) {
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    postKey((CGKeyCode)kVK_Control, true, 0);
-    if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0);
+    postKey((CGKeyCode)kVK_Control, true, 0, targetPid);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0, targetPid);
     CGEventFlags f = kCGEventFlagMaskControl |
                      (k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0);
-    postKey(k.code, true,  f);
-    postKey(k.code, false, f);
-    if (k.shift) postKey((CGKeyCode)kVK_Shift, false, 0);
-    postKey((CGKeyCode)kVK_Control, false, 0);
+    postKey(k.code, true,  f, targetPid);
+    postKey(k.code, false, f, targetPid);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, false, 0, targetPid);
+    postKey((CGKeyCode)kVK_Control, false, 0, targetPid);
 }
 
 void MacInputBackend::setVelocity(char c) {
     KeyInfo k = lookupKey(c);
     if (!k.valid) return;
-    postKey((CGKeyCode)kVK_Option, true, 0);
-    if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0);
+    postKey((CGKeyCode)kVK_Option, true, 0, targetPid);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0, targetPid);
     CGEventFlags f = kCGEventFlagMaskAlternate |
                      (k.shift ? kCGEventFlagMaskShift : (CGEventFlags)0);
-    postKey(k.code, true,  f);
-    postKey(k.code, false, f);
-    if (k.shift) postKey((CGKeyCode)kVK_Shift, false, 0);
-    postKey((CGKeyCode)kVK_Option, false, 0);
+    postKey(k.code, true,  f, targetPid);
+    postKey(k.code, false, f, targetPid);
+    if (k.shift) postKey((CGKeyCode)kVK_Shift, false, 0, targetPid);
+    postKey((CGKeyCode)kVK_Option, false, 0, targetPid);
 }
 
 std::vector<std::string> MacInputBackend::availableModes() const {
@@ -224,7 +233,55 @@ int MacInputBackend::currentMode() const { return mode; }
 void MacInputBackend::releaseAll() {
     // Best-effort: release sustain if it might be held. Per-note state lives
     // in NoteRouter, which calls sendKeyUp for each held note separately.
-    postKey((CGKeyCode)kVK_Space, false, (CGEventFlags)0);
+    postKey((CGKeyCode)kVK_Space, false, (CGEventFlags)0, targetPid);
+}
+
+std::vector<IInputBackend::AppTarget> MacInputBackend::availableTargets() {
+    std::vector<AppTarget> result;
+    result.push_back({"(active foreground)", 0});
+
+    @autoreleasepool {
+        NSArray<NSRunningApplication*>* apps =
+            [[NSWorkspace sharedWorkspace] runningApplications];
+        for (NSRunningApplication* app in apps) {
+            // Skip background daemons, agents, the Dock, etc. Regular apps
+            // are the ones a user would expect to target.
+            if (app.activationPolicy != NSApplicationActivationPolicyRegular) continue;
+            NSString* name = app.localizedName;
+            if (!name) continue;
+            const char* utf8 = name.UTF8String;
+            if (!utf8 || !*utf8) continue;
+            result.push_back({std::string(utf8), (int)app.processIdentifier});
+        }
+    }
+
+    cachedTargets = result;
+    // Best-effort: if the previously selected pid no longer exists, fall
+    // back to "(active foreground)".
+    if (targetPid > 0) {
+        bool stillThere = false;
+        for (size_t i = 0; i < cachedTargets.size(); ++i) {
+            if (cachedTargets[i].identifier == targetPid) {
+                targetIndex = (int)i;
+                stillThere = true;
+                break;
+            }
+        }
+        if (!stillThere) {
+            targetIndex = 0;
+            targetPid = 0;
+        }
+    }
+    return result;
+}
+
+void MacInputBackend::setTargetIndex(int index) {
+    if (cachedTargets.empty()) availableTargets();
+    if (index < 0 || index >= (int)cachedTargets.size()) return;
+    targetIndex = index;
+    targetPid = cachedTargets[index].identifier;
+    std::fprintf(stderr, "[MacInputBackend] target -> %s (pid=%d)\n",
+                 cachedTargets[index].name.c_str(), targetPid);
 }
 
 #endif  // __APPLE__

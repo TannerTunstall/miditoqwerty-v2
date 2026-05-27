@@ -20,11 +20,24 @@ public:
     void setMode(int modeIndex) override;
     int currentMode() const override;
 
+    std::vector<AppTarget> availableTargets() override;
+    void setTargetIndex(int index) override;
+    int  currentTargetIndex() const override { return targetIndex; }
+
     void releaseAll() override;
 
 private:
     // 0 = Off (OS-aware), 1 = Emulator (layout-bypass, kVK_ANSI_*)
     int mode = 1;
+
+    // 0 = first entry which is always "(active foreground)" -> pid 0
+    int targetIndex = 0;
+    // pid_t (==int32) for the selected target. 0 means "post to HID tap"
+    // (system-wide, lands wherever focus is).
+    int targetPid = 0;
+
+    // Cached app list — refreshed when availableTargets() is called.
+    std::vector<AppTarget> cachedTargets;
 };
 
 #endif // __APPLE__

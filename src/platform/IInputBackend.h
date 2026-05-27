@@ -11,6 +11,22 @@ class IInputBackend {
 public:
     virtual ~IInputBackend() = default;
 
+    // Pick a specific running app as the keystroke destination, instead of
+    // whatever happens to be foregrounded. On macOS this uses
+    // CGEventPostToPid, which delivers events directly to the target process
+    // and bypasses the system-level dead-key / IME layer (so Option+digit
+    // chords arrive at Roblox as actual Option+digit instead of being
+    // turned into ¡™£¢∞§¶ etc.). On Windows this is much harder to do
+    // correctly with games (DirectInput ignores PostMessage), so the Windows
+    // backend currently only offers the foreground target.
+    struct AppTarget {
+        std::string name;        // human-readable, displayed in the combo
+        int         identifier;  // pid_t on macOS; 0 = active foreground
+    };
+    virtual std::vector<AppTarget> availableTargets() { return {{"(active foreground)", 0}}; }
+    virtual void setTargetIndex(int /*index*/) {}
+    virtual int  currentTargetIndex() const { return 0; }
+
     // Note-output operations. `c` is a Virtual Piano character produced by the
     // note router; `location` is one of 'l' (low octave, out-of-range low),
     // 'm' (middle, the 61-key span), or 'h' (high octave, out-of-range high).

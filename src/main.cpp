@@ -572,6 +572,45 @@ int main(int argc, char* argv[]) {
                 foundDevice = true;
             }
 
+            // Target app selector — send keystrokes to a specific running app
+            // instead of whatever is currently foregrounded. On macOS this also
+            // bypasses the system dead-key / IME layer so modifier chords like
+            // Option+digit arrive at the target as actual modifier chords.
+            ImGui::Text("Target App");
+            {
+                static std::vector<IInputBackend::AppTarget> targets;
+                static bool targetsLoaded = false;
+                if (!targetsLoaded) {
+                    targets = input->availableTargets();
+                    targetsLoaded = true;
+                }
+                int curIdx = input->currentTargetIndex();
+                const char* curName = (curIdx >= 0 && curIdx < (int)targets.size())
+                                          ? targets[curIdx].name.c_str()
+                                          : "(active foreground)";
+                if (ImGui::BeginCombo("##target_app", curName)) {
+                    // Refresh on every open so newly-launched apps appear.
+                    targets = input->availableTargets();
+                    curIdx = input->currentTargetIndex();
+                    for (int i = 0; i < (int)targets.size(); ++i) {
+                        bool selected = (curIdx == i);
+                        if (ImGui::Selectable(targets[i].name.c_str(), selected)) {
+                            input->setTargetIndex(i);
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Pick a running app to receive keystrokes.\n"
+                        "(active foreground) sends wherever focus is.\n"
+                        "On macOS, picking a specific app bypasses the\n"
+                        "Option+digit dead-key composition so velocity\n"
+                        "and other modifier chords work correctly.");
+                }
+            }
+
             // Input backend mode selector — backend-driven so Windows and macOS
             // expose their own mode lists without inline branching.
             ImGui::Text("QWERTY Emulator");
