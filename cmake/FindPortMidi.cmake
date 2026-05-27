@@ -12,16 +12,22 @@
 find_library(PORTMIDI_LIBRARY portmidi
   HINTS
   $ENV{PORTMIDI_DIR}
+  /opt/homebrew/lib
+  /usr/local/lib
 )
 
 find_path(PORTMIDI_INCLUDE_DIR portmidi.h
   HINTS
   $ENV{PORTMIDI_DIR}
+  /opt/homebrew/include
+  /usr/local/include
 )
 
 find_path( PORTTIME_INCLUDE_DIR porttime.h
   HINTS
   $ENV{PORTMIDI_DIR}
+  /opt/homebrew/include
+  /usr/local/include
 )
 
 set( PORTMIDI_LIBRARIES ${PORTMIDI_LIBRARY} )

@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "platform/compat.h"
 
 std::string Setting::GetName() {
 	return name;

@@ -1,5 +1,6 @@
 #include "imgui.h"
 #include "themes.h"
+#include "platform/compat.h"
 
 #define IM_NEWLINE  "\r\n"
 

@@ -1,4 +1,7 @@
 #pragma once
+
+#ifdef _WIN32
+
 #include <iostream>
 #include <Windows.h>
 #include <unordered_map>
@@ -41,3 +44,5 @@ void qwerty_sendOutOfRangeKey(char c);
 void qwerty_setVelocity(char c);
 
 //void type(std::string string);
+
+#endif // _WIN32

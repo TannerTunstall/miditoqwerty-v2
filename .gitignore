@@ -4,3 +4,9 @@
 *.user
 
 build/
+
+# Claude Code working files
+.claude/
+CLAUDE.md
+PLAN.md
+docs/

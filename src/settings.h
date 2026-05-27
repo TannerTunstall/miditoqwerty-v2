@@ -1,10 +1,13 @@
 #pragma once
 #include <vector>
 #include <string>
-#include <winerror.h>
 #include <stdio.h>
 #include <imgui.h>
 #include "themes.h"
+
+#ifdef _WIN32
+#include <winerror.h>
+#endif
 
 class Setting {
 	std::string name;

@@ -3,7 +3,8 @@
 
 #include <iostream>
 #include <cstdlib>
-#include <Windows.h>
+
+#include <SDL.h>
 
 #include "Midi.h"
 
@@ -11,7 +12,7 @@ template<typename T>
 void must(T err) {
     if (err != 0) {
         std::string errorText = Pm_GetErrorText(static_cast<PmError>(err));
-        std::string errorTip = "";//NULL;
+        std::string errorTip = "";
 
         if (errorText == "PortMidi: Bad pointer")
             errorTip = "Error: Your MIDI input port couldn't be found.";
@@ -22,10 +23,13 @@ void must(T err) {
             errorTip = "Error: " + errorText;
         }
 
-        printf("Error occurred: %s", errorTip.c_str());
-        MessageBox(NULL, errorTip.c_str(), errorText.c_str(), MB_OK);
+        fprintf(stderr, "Error occurred: %s\n", errorTip.c_str());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                                 errorText.c_str(),
+                                 errorTip.c_str(),
+                                 nullptr);
 
-        std::exit(1);//horrible
+        std::exit(1);
     }
 }
 
