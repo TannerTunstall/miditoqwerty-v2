@@ -3,6 +3,11 @@
 
 unsigned char scanSets[2][26];
 
+// Definition of the extern declared in inpututils.h. WindowsInputBackend
+// writes this to switch between Set 1 / Set 2 / QWERTZ; qwerty_getScanCodeChar
+// reads it. Used to live in main.cpp before the Stage 1.2 refactor.
+int scanSetChoice = 0;
+
 std::unordered_map<unsigned char, short> scanSet1Map;
 std::unordered_map<unsigned char, short> scanSet2Map;
 std::unordered_map<unsigned char, short> scanSet3Map;
