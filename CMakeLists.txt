@@ -85,6 +85,7 @@ set(MTQ_CORE_SOURCES
     src/util.cpp
     src/core/NoteRouter.cpp
     src/midi/MidiFilePlayer.cpp
+    src/midi/MidiLibrary.cpp
     src/platform/InputBackend.cpp
     imgui/backends/imgui_impl_sdl.cpp)
 
@@ -145,6 +146,8 @@ if(WIN32)
         gl3w
         midifile
         comdlg32                  # GetOpenFileNameA
+        shell32                   # SHBrowseForFolder / SHGetPathFromIDList
+        ole32                     # CoTaskMemFree
         ${CMAKE_DL_LIBS})
 elseif(APPLE)
     find_library(COCOA_FRAMEWORK Cocoa)

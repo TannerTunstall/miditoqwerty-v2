@@ -28,6 +28,7 @@
 #include "platform/file_dialog.h"
 #include "core/NoteRouter.h"
 #include "midi/MidiFilePlayer.h"
+#include "midi/MidiLibrary.h"
 
 #include "GL/gl3w.h"
 
@@ -89,6 +90,7 @@ Log logger;
 std::unique_ptr<IInputBackend> input;
 std::unique_ptr<NoteRouter> noteRouter;
 std::unique_ptr<MidiFilePlayer> filePlayer;
+std::unique_ptr<MidiLibrary> library;
 std::unique_ptr<IHotkeyService> hotkeys;
 bool overlayHidden = false;
 
@@ -165,6 +167,28 @@ int main(int argc, char* argv[]) {
     noteRouter = std::make_unique<NoteRouter>(input.get(), &logger);
     noteRouter->bindSettings(&enableOutput, &eightyeightkey, &sustain, &velocity, &sustainCutoff);
     filePlayer = std::make_unique<MidiFilePlayer>(noteRouter.get(), &piano, &logger);
+    library    = std::make_unique<MidiLibrary>();
+
+    // Default library root. Platform-conventional location; the user can
+    // change it at runtime via the Library tab's Browse button. No persistence
+    // yet — a custom root reverts to this default on next launch (will get
+    // proper string-setting persistence in Stage 3b/c).
+    {
+        std::string defaultRoot;
+        if (const char* home = std::getenv("HOME")) {
+            defaultRoot = std::string(home) + "/Documents/miditoqwerty/library";
+        } else if (const char* userprofile = std::getenv("USERPROFILE")) {
+            defaultRoot = std::string(userprofile) + "/Documents/miditoqwerty/library";
+        }
+        if (!defaultRoot.empty() && std::filesystem::exists(defaultRoot)) {
+            int n = library->scanDirectory(defaultRoot);
+            printf("Library: scanned %s (%d entries)\n", defaultRoot.c_str(), n);
+        } else {
+            // Initialise the root path even if the directory doesn't exist
+            // yet, so the UI shows the suggested location.
+            library->scanDirectory(defaultRoot);  // no-op if dir absent
+        }
+    }
 
     if (autoLoadPath) {
         if (filePlayer->load(autoLoadPath)) {
@@ -700,6 +724,8 @@ int main(int argc, char* argv[]) {
             ImGui::SetNextWindowSize(ImVec2(rightW, playerH), ImGuiCond_FirstUseEver);
             ImGui::Begin("Player", NULL, POSSIBLYEDITABLE);
 
+            if (ImGui::BeginTabBar("##player_tabs")) {
+            if (ImGui::BeginTabItem("Now Playing")) {
             static char pathBuf[1024] = {0};
             if (ImGui::Button("Browse...")) {
                 std::string picked = platform::openMidiFileDialog(window);
@@ -785,6 +811,115 @@ int main(int argc, char* argv[]) {
                     if ((ch + 1) % 4 != 0) ImGui::SameLine();
                 }
                 ImGui::TextDisabled("Channel 10 (drumkit) is off by default.");
+            }
+
+            ImGui::EndTabItem();
+            }
+
+            // ---- Library tab ---------------------------------------------
+            if (ImGui::BeginTabItem("Library")) {
+                static char rootBuf[1024] = {0};
+                static char searchBuf[256] = {0};
+                static int  selectedIdx = -1;
+
+                // Sync the root buffer with whatever the library currently
+                // believes its root is (e.g. after a startup scan or an
+                // earlier Browse).
+                if (rootBuf[0] == '\0' || library->currentRoot() != std::string(rootBuf)) {
+                    std::snprintf(rootBuf, sizeof(rootBuf), "%s",
+                                  library->currentRoot().c_str());
+                }
+
+                if (ImGui::Button("Browse##lib_root")) {
+                    std::string picked = platform::openDirectoryDialog(
+                        window, "Select MIDI library folder");
+                    if (!picked.empty()) {
+                        std::snprintf(rootBuf, sizeof(rootBuf), "%s", picked.c_str());
+                        int n = library->scanDirectory(rootBuf);
+                        logger.AddLog("Library: scanned %s (%d entries)\n", rootBuf, n);
+                        selectedIdx = -1;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::PushItemWidth(-60.0f);
+                ImGui::InputText("##lib_root", rootBuf, sizeof(rootBuf));
+                ImGui::PopItemWidth();
+                ImGui::SameLine();
+                if (ImGui::Button("Scan")) {
+                    int n = library->scanDirectory(rootBuf);
+                    logger.AddLog("Library: scanned %s (%d entries)\n", rootBuf, n);
+                    selectedIdx = -1;
+                }
+
+                ImGui::PushItemWidth(-1);
+                ImGui::InputTextWithHint("##lib_search", "search...",
+                                         searchBuf, sizeof(searchBuf));
+                ImGui::PopItemWidth();
+
+                const auto& all = library->entries();
+                auto matches = library->search(searchBuf);
+                ImGui::Text("%zu of %zu entries", matches.size(), all.size());
+
+                // Action buttons for the current selection.
+                if (selectedIdx >= 0 && (size_t)selectedIdx < all.size()) {
+                    const auto& sel = all[(size_t)selectedIdx];
+                    if (ImGui::Button("Load")) {
+                        if (filePlayer->load(sel.path)) {
+                            logger.AddLog("Library: loaded %s\n", sel.title.c_str());
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Load & Play")) {
+                        if (filePlayer->load(sel.path)) {
+                            filePlayer->play();
+                            logger.AddLog("Library: playing %s\n", sel.title.c_str());
+                        }
+                    }
+                } else {
+                    ImGui::TextDisabled("(select an entry)");
+                }
+
+                ImGui::BeginChild("##lib_list", ImVec2(0, 0), true);
+                if (all.empty()) {
+                    if (library->currentRoot().empty()) {
+                        ImGui::TextWrapped("No library root set. Pick a folder with .mid files above.");
+                    } else {
+                        ImGui::TextWrapped("No MIDI files found under:\n%s",
+                                           library->currentRoot().c_str());
+                    }
+                }
+                for (size_t mIdx : matches) {
+                    const auto& e = all[mIdx];
+                    char label[768];
+                    if (e.loadFailed) {
+                        std::snprintf(label, sizeof(label),
+                            "%s  (failed to parse)", e.title.c_str());
+                    } else {
+                        std::snprintf(label, sizeof(label),
+                            "%s  %d:%02d  %d notes",
+                            e.title.c_str(),
+                            (int)(e.duration / 60.0),
+                            (int)e.duration % 60,
+                            e.noteCount);
+                    }
+                    bool isSel = (selectedIdx == (int)mIdx);
+                    if (ImGui::Selectable(label, isSel,
+                                          ImGuiSelectableFlags_AllowDoubleClick)) {
+                        selectedIdx = (int)mIdx;
+                        if (ImGui::IsMouseDoubleClicked(0)) {
+                            if (filePlayer->load(e.path)) {
+                                filePlayer->play();
+                                logger.AddLog("Library: playing %s\n", e.title.c_str());
+                            }
+                        }
+                    }
+                }
+                ImGui::EndChild();
+
+                ImGui::EndTabItem();
+            }
+
+            ImGui::EndTabBar();
             }
 
             ImGui::End();

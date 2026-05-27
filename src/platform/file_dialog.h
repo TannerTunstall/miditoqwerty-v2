@@ -11,4 +11,8 @@ namespace platform {
 // from the main thread.
 std::string openMidiFileDialog(SDL_Window* parent);
 
+// Native directory picker. Used to pick the MIDI library root. Empty string
+// on cancel. Main thread only.
+std::string openDirectoryDialog(SDL_Window* parent, const std::string& message);
+
 }  // namespace platform

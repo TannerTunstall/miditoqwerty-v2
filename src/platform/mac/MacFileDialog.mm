@@ -26,6 +26,24 @@ std::string openMidiFileDialog(SDL_Window* /*parent*/) {
     }
 }
 
+std::string openDirectoryDialog(SDL_Window* /*parent*/, const std::string& message) {
+    @autoreleasepool {
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        panel.canChooseFiles = NO;
+        panel.canChooseDirectories = YES;
+        panel.allowsMultipleSelection = NO;
+        panel.canCreateDirectories = YES;
+        if (!message.empty()) {
+            panel.message = [NSString stringWithUTF8String:message.c_str()];
+        }
+        if ([panel runModal] != NSModalResponseOK) return {};
+        NSURL* url = panel.URLs.firstObject;
+        if (!url) return {};
+        const char* utf8 = url.path.UTF8String;
+        return utf8 ? std::string(utf8) : std::string();
+    }
+}
+
 }  // namespace platform
 
 #endif  // __APPLE__

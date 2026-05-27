@@ -6,6 +6,7 @@
 #include <SDL_syswm.h>
 #include <Windows.h>
 #include <commdlg.h>
+#include <shlobj.h>
 
 namespace platform {
 
@@ -33,6 +34,22 @@ std::string openMidiFileDialog(SDL_Window* parent) {
 
     if (!GetOpenFileNameA(&ofn)) return {};
     return std::string(filename);
+}
+
+std::string openDirectoryDialog(SDL_Window* /*parent*/, const std::string& message) {
+    // SHBrowseForFolder: older but no COM init required and good enough for
+    // a single-shot directory pick. Modern IFileOpenDialog with FOS_PICKFOLDERS
+    // is nicer; future polish.
+    BROWSEINFOA bi = {0};
+    bi.lpszTitle = message.empty() ? "Select folder" : message.c_str();
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+
+    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
+    if (!pidl) return {};
+    char path[MAX_PATH] = {0};
+    BOOL ok = SHGetPathFromIDListA(pidl, path);
+    CoTaskMemFree(pidl);
+    return ok ? std::string(path) : std::string();
 }
 
 }  // namespace platform
