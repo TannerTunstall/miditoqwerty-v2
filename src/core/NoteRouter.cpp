@@ -34,6 +34,8 @@ void fireAndDiscard(Fn&& fn, Args&&... args) {
 
 void NoteRouter::onMidiEvent(PmTimestamp /*ts*/, uint8_t status,
                              uint8_t data1, uint8_t data2) {
+    std::lock_guard<std::mutex> lk(mutex);
+
     if (logger) logger->AddLog("Event status: %d, Data1: %04X, Data2: %04X\n",
                                status, data1, data2);
 
@@ -130,6 +132,7 @@ void NoteRouter::onMidiEvent(PmTimestamp /*ts*/, uint8_t status,
 }
 
 void NoteRouter::releaseAll() {
+    std::lock_guard<std::mutex> lk(mutex);
     if (sustainOn) {
         backend->sendKeyUp(' ', 'm');
         sustainOn = false;

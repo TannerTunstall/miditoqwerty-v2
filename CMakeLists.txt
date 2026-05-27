@@ -24,6 +24,14 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(SDL2 REQUIRED)
 find_package(PortMidi REQUIRED)
 
+# craigsapp/midifile: SMF parser used by the built-in file player. Pinned by
+# submodule. Build just the library, skip the 50+ CLI tools. Override the
+# policy version so the submodule's `cmake_minimum_required(2.8)` doesn't
+# get rejected by modern CMake.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+set(BUILD_MIDILIBRARY_ONLY ON CACHE BOOL "" FORCE)
+add_subdirectory(midifile)
+
 # Generate gl3w headers and sources (runs the submodule's own CMake). The
 # submodule pins to CMake 2.x compatibility which modern CMake refuses by
 # default, and uses the removed FindPythonInterp module — re-allow the
@@ -54,6 +62,7 @@ include_directories(
     ${PORTMIDI_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/imgui
     ${CMAKE_SOURCE_DIR}/imgui/backends
+    ${CMAKE_SOURCE_DIR}/midifile/include
     ${CMAKE_SOURCE_DIR}/src)
 
 add_library(imgui
@@ -75,6 +84,7 @@ set(MTQ_CORE_SOURCES
     src/themes.cpp
     src/util.cpp
     src/core/NoteRouter.cpp
+    src/midi/MidiFilePlayer.cpp
     src/platform/InputBackend.cpp
     imgui/backends/imgui_impl_sdl.cpp)
 
@@ -129,6 +139,7 @@ if(WIN32)
         ${SDL2_DIR}/lib/x64/SDL2main.lib
         imgui
         gl3w
+        midifile
         ${CMAKE_DL_LIBS})
 elseif(APPLE)
     find_library(COCOA_FRAMEWORK Cocoa)
@@ -152,6 +163,7 @@ elseif(APPLE)
         ${MTQ_SDL2_LINK}
         imgui
         gl3w
+        midifile
         ${COCOA_FRAMEWORK}
         ${IOKIT_FRAMEWORK}
         ${COREVIDEO_FRAMEWORK}
@@ -168,5 +180,6 @@ else()
         ${SDL2_LIBRARIES}
         imgui
         gl3w
+        midifile
         ${CMAKE_DL_LIBS})
 endif()

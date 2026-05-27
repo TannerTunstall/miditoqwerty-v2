@@ -26,6 +26,7 @@
 #include "platform/IHotkeyService.h"
 #include "platform/overlay.h"
 #include "core/NoteRouter.h"
+#include "midi/MidiFilePlayer.h"
 
 #include "GL/gl3w.h"
 
@@ -86,6 +87,7 @@ Log logger;
 
 std::unique_ptr<IInputBackend> input;
 std::unique_ptr<NoteRouter> noteRouter;
+std::unique_ptr<MidiFilePlayer> filePlayer;
 std::unique_ptr<IHotkeyService> hotkeys;
 bool overlayHidden = false;
 
@@ -156,6 +158,7 @@ int main(int argc, char* argv[]) {
     input = createInputBackend();
     noteRouter = std::make_unique<NoteRouter>(input.get(), &logger);
     noteRouter->bindSettings(&enableOutput, &eightyeightkey, &sustain, &velocity, &sustainCutoff);
+    filePlayer = std::make_unique<MidiFilePlayer>(noteRouter.get(), &piano, &logger);
 
     settingsHandler.AddSetting("Always on top", &alwaysontop);
     settingsHandler.AddSetting("Editable windows", &windowsEditable);
@@ -211,7 +214,7 @@ int main(int argc, char* argv[]) {
     // Default size bumped from 435x550 so the Settings panel doesn't need
     // scrolling out-of-the-box. Window is resizable so users can shrink it.
     window = SDL_CreateWindow("Midi to Qwerty", SDL_WINDOWPOS_CENTERED,
-                                          SDL_WINDOWPOS_CENTERED, 520, 720, window_flags);
+                                          SDL_WINDOWPOS_CENTERED, 520, 800, window_flags);
     SDL_GLContext gl_context = SDL_GL_CreateContext(window);
     SDL_GL_MakeCurrent(window, gl_context);
     SDL_GL_SetSwapInterval(1); // Enable vsync
@@ -330,7 +333,7 @@ int main(int argc, char* argv[]) {
         printf("Loaded small layout\n");
     }
     else {
-        SDL_SetWindowSize(window, 520, 720);
+        SDL_SetWindowSize(window, 520, 800);
         printf("Loaded tall layout\n");
     }
 
@@ -401,6 +404,9 @@ int main(int argc, char* argv[]) {
         const float midH    = layoutH - midiH - kbdH - 10.0f;
         const float leftW   = layoutW * 0.46f;
         const float rightW  = layoutW - leftW - 5.0f;
+        // Right column splits into Player (top) + Log (bottom).
+        const float playerH = midH * 0.42f;
+        const float logH    = midH - playerH - 5.0f;
 
         if (show_midi_window) {
             ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
@@ -502,7 +508,7 @@ int main(int argc, char* argv[]) {
                             smallLayout = true;
                         }
                         else if (current_item == std::string("Tall")) {
-                            SDL_SetWindowSize(window, 520, 720);
+                            SDL_SetWindowSize(window, 520, 800);
                             ImGui::LoadIniSettingsFromDisk("layout_tall.ini");
                             smallLayout = false;
                         }
@@ -635,9 +641,95 @@ int main(int argc, char* argv[]) {
             ImGui::End();
         }
 
+        // Player panel
         {
             ImGui::SetNextWindowPos(ImVec2(leftW + 5, midiH + 5), ImGuiCond_FirstUseEver);
-            ImGui::SetNextWindowSize(ImVec2(rightW, midH), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(rightW, playerH), ImGuiCond_FirstUseEver);
+            ImGui::Begin("Player", NULL, POSSIBLYEDITABLE);
+
+            static char pathBuf[1024] = {0};
+            ImGui::PushItemWidth(-90.0f);
+            ImGui::InputText("##player_path", pathBuf, sizeof(pathBuf));
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            if (ImGui::Button("Load") && pathBuf[0]) {
+                if (!filePlayer->load(pathBuf)) {
+                    logger.AddLog("Player: failed to load %s\n", pathBuf);
+                }
+            }
+
+            const auto pstate = filePlayer->state();
+            const char* stateLabel = "Empty";
+            switch (pstate) {
+                case MidiFilePlayer::State::Empty:   stateLabel = "Empty"; break;
+                case MidiFilePlayer::State::Loaded:  stateLabel = "Loaded"; break;
+                case MidiFilePlayer::State::Playing: stateLabel = "Playing"; break;
+                case MidiFilePlayer::State::Paused:  stateLabel = "Paused"; break;
+            }
+            ImGui::Text("State: %s", stateLabel);
+            if (!filePlayer->loadedPath().empty()) {
+                // Show just the filename for compactness.
+                const auto& fp = filePlayer->loadedPath();
+                auto slash = fp.find_last_of("/\\");
+                ImGui::TextWrapped("File: %s",
+                    slash == std::string::npos ? fp.c_str() : fp.c_str() + slash + 1);
+            }
+
+            const bool canPlay = (pstate == MidiFilePlayer::State::Loaded ||
+                                  pstate == MidiFilePlayer::State::Paused);
+            const bool isPlaying = (pstate == MidiFilePlayer::State::Playing);
+
+            if (ImGui::Button("Play") && canPlay)    filePlayer->play();
+            ImGui::SameLine();
+            if (ImGui::Button("Pause") && isPlaying) filePlayer->pause();
+            ImGui::SameLine();
+            if (ImGui::Button("Stop"))               filePlayer->stop();
+
+            // Position / seek
+            const double dur = filePlayer->durationSeconds();
+            float pos = (float)filePlayer->positionSeconds();
+            if (dur > 0) {
+                ImGui::PushItemWidth(-1);
+                if (ImGui::SliderFloat("##player_pos", &pos, 0.0f, (float)dur,
+                                       "%.1fs", ImGuiSliderFlags_AlwaysClamp)) {
+                    filePlayer->seek(pos);
+                }
+                ImGui::PopItemWidth();
+                ImGui::Text("%.1fs / %.1fs", pos, dur);
+            } else {
+                ImGui::TextDisabled("(no file loaded)");
+            }
+
+            auto& cfg = filePlayer->config();
+            ImGui::Checkbox("Loop", &cfg.loop);
+
+            if (ImGui::CollapsingHeader("Mix")) {
+                ImGui::SliderFloat("Tempo",    &cfg.tempoScale,    0.25f, 4.0f, "%.2fx");
+                ImGui::SliderFloat("Velocity", &cfg.velocityScale, 0.25f, 4.0f, "%.2fx");
+                ImGui::Checkbox("Apply CC 7 (volume) + CC 11 (expression)",
+                                &cfg.applyChannelVolume);
+            }
+            if (ImGui::CollapsingHeader("Channels")) {
+                // 16 channel toggles in a 4x4 grid.
+                for (int ch = 0; ch < 16; ++ch) {
+                    bool on = (cfg.channelMask & (uint16_t)(1u << ch)) != 0;
+                    char lbl[8];
+                    snprintf(lbl, sizeof(lbl), "%d", ch + 1);
+                    if (ImGui::Checkbox(lbl, &on)) {
+                        if (on) cfg.channelMask |= (uint16_t)(1u << ch);
+                        else    cfg.channelMask &= (uint16_t)~(1u << ch);
+                    }
+                    if ((ch + 1) % 4 != 0) ImGui::SameLine();
+                }
+                ImGui::TextDisabled("Channel 10 (drumkit) is off by default.");
+            }
+
+            ImGui::End();
+        }
+
+        {
+            ImGui::SetNextWindowPos(ImVec2(leftW + 5, midiH + 10 + playerH), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(rightW, logH), ImGuiCond_FirstUseEver);
             ImGui::Begin("Log", NULL, POSSIBLYEDITABLE);
             ImGui::End();
 
@@ -679,7 +771,9 @@ int main(int argc, char* argv[]) {
     // Cleanup
     midiThreadExitSignal.set_value();
     midithread.join();
+    if (filePlayer) filePlayer->stop();
     if (noteRouter) noteRouter->releaseAll();
+    filePlayer.reset();  // join scheduler thread before backend/router die
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

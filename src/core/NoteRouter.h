@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <mutex>
 #include <portmidi.h>
 
 class IInputBackend;
@@ -41,4 +42,9 @@ private:
 
     bool sustainOn = false;
     char prevVelocityChar = 'X';
+
+    // Serializes onMidiEvent / releaseAll across the MIDI poll thread (live
+    // input) and the file-player scheduler thread. Live MIDI events are rare
+    // enough that lock contention here is a non-issue.
+    std::mutex mutex;
 };
