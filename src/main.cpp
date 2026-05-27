@@ -23,6 +23,7 @@
 #include "Qwerty.h"
 
 #include "platform/IInputBackend.h"
+#include "platform/IHotkeyService.h"
 #include "platform/overlay.h"
 #include "core/NoteRouter.h"
 
@@ -82,6 +83,8 @@ Log logger;
 
 std::unique_ptr<IInputBackend> input;
 std::unique_ptr<NoteRouter> noteRouter;
+std::unique_ptr<IHotkeyService> hotkeys;
+bool overlayHidden = false;
 
 void applyBackendMode() {
     if (!input) return;
@@ -199,6 +202,23 @@ int main(int argc, char* argv[]) {
     // No-op on Windows where SDL_WINDOW_ALWAYS_ON_TOP already does the job.
     configureWindowOverlay(window);
 
+    // Global show/hide hotkey: Cmd+Shift+H on Mac, Ctrl+Alt+H on Windows.
+    // Fires even when Roblox has fullscreen focus.
+    hotkeys = IHotkeyService::create(window);
+    if (hotkeys) {
+        hotkeys->registerToggle([]() {
+            overlayHidden = !overlayHidden;
+            if (overlayHidden) {
+                SDL_HideWindow(window);
+            } else {
+                SDL_ShowWindow(window);
+                // Re-apply overlay level — some platforms reset window state
+                // on hide/show, and the overlay must keep floating over Roblox.
+                configureWindowOverlay(window);
+            }
+        });
+    }
+
     // Initialize OpenGL loader
     bool err = gl3wInit() != 0;
     if (err) {
@@ -291,6 +311,7 @@ int main(int argc, char* argv[]) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
+            if (hotkeys) hotkeys->handleSDLSysWMEvent(event);
             if (event.type == SDL_QUIT)
                 done = true;
             if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE &&

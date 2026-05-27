@@ -85,11 +85,13 @@ if(WIN32)
         src/inpututils.cpp
         src/platform/win/WindowsInputBackend.cpp
         src/platform/win/WindowsOverlay.cpp
+        src/platform/win/WindowsHotkey.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/res/resource.rc)
 elseif(APPLE)
     list(APPEND MTQ_PLATFORM_SOURCES
         src/platform/mac/MacInputBackend.mm
-        src/platform/mac/MacOverlay.mm)
+        src/platform/mac/MacOverlay.mm
+        src/platform/mac/MacHotkey.mm)
 endif()
 
 # --- Executable -------------------------------------------------------------
@@ -105,6 +107,8 @@ elseif(APPLE)
     set_source_files_properties(src/platform/mac/MacInputBackend.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     set_source_files_properties(src/platform/mac/MacOverlay.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(src/platform/mac/MacHotkey.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
     add_executable(miditoqwerty
