@@ -31,6 +31,7 @@
 #include "midi/MidiLibrary.h"
 #include "midi/Playlist.h"
 #include "midi/Concert.h"
+#include "app/AppConfig.h"
 
 #include "GL/gl3w.h"
 
@@ -96,6 +97,7 @@ std::unique_ptr<MidiLibrary> library;
 std::unique_ptr<PlaylistManager> playlists;
 std::unique_ptr<Concert> concert;
 std::unique_ptr<IHotkeyService> hotkeys;
+std::unique_ptr<AppConfig> appConfig;
 bool overlayHidden = false;
 
 void applyBackendMode() {
@@ -193,25 +195,40 @@ int main(int argc, char* argv[]) {
     library    = std::make_unique<MidiLibrary>();
     concert    = std::make_unique<Concert>(filePlayer.get(), &logger);
 
-    // Default library root. Platform-conventional location; the user can
-    // change it at runtime via the Library tab's Browse button. No persistence
-    // yet — a custom root reverts to this default on next launch (will get
-    // proper string-setting persistence in Stage 3b/c).
+    // App config + library: load saved root from disk if present, else fall
+    // back to the platform-conventional default. Library entries are cached
+    // alongside so cold-start skips the midifile re-parse.
+    std::string userDataDir;
+    if (const char* home = std::getenv("HOME")) {
+        userDataDir = std::string(home) + "/Documents/miditoqwerty";
+    } else if (const char* userprofile = std::getenv("USERPROFILE")) {
+        userDataDir = std::string(userprofile) + "/Documents/miditoqwerty";
+    }
+    appConfig = std::make_unique<AppConfig>(userDataDir + "/app.config");
+    appConfig->load();
+
+    // Restore last-selected keystroke-target app (macOS) if it's still
+    // running. No-op when the saved name isn't in the current target list.
+    if (input && appConfig->has("target_app")) {
+        const std::string want = appConfig->get("target_app");
+        auto targets = input->availableTargets();
+        for (int i = 0; i < (int)targets.size(); ++i) {
+            if (targets[i].name == want) {
+                input->setTargetIndex(i);
+                break;
+            }
+        }
+    }
+
+    library->setCachePath(userDataDir + "/library.cache");
+
     {
-        std::string defaultRoot;
-        if (const char* home = std::getenv("HOME")) {
-            defaultRoot = std::string(home) + "/Documents/miditoqwerty/library";
-        } else if (const char* userprofile = std::getenv("USERPROFILE")) {
-            defaultRoot = std::string(userprofile) + "/Documents/miditoqwerty/library";
-        }
-        if (!defaultRoot.empty() && std::filesystem::exists(defaultRoot)) {
-            int n = library->scanDirectory(defaultRoot);
-            printf("Library: scanned %s (%d entries)\n", defaultRoot.c_str(), n);
-        } else {
-            // Initialise the root path even if the directory doesn't exist
-            // yet, so the UI shows the suggested location.
-            library->scanDirectory(defaultRoot);  // no-op if dir absent
-        }
+        std::string libRoot = appConfig->get(
+            "library_root", userDataDir + "/library");
+        // Kick off async on startup — populates from cache instantly, then
+        // refreshes against disk in the background.
+        library->scanDirectoryAsync(libRoot);
+        printf("Library: scanning %s (async)\n", libRoot.c_str());
     }
 
     // Default playlists directory: ~/Documents/miditoqwerty/playlists/
@@ -668,6 +685,10 @@ int main(int argc, char* argv[]) {
                         bool selected = (curIdx == i);
                         if (ImGui::Selectable(targets[i].name.c_str(), selected)) {
                             input->setTargetIndex(i);
+                            if (appConfig) {
+                                appConfig->set("target_app", targets[i].name);
+                                appConfig->save();
+                            }
                         }
                         if (selected) ImGui::SetItemDefaultFocus();
                     }
@@ -887,8 +908,12 @@ int main(int argc, char* argv[]) {
                         window, "Select MIDI library folder");
                     if (!picked.empty()) {
                         std::snprintf(rootBuf, sizeof(rootBuf), "%s", picked.c_str());
-                        int n = library->scanDirectory(rootBuf);
-                        logger.AddLog("Library: scanned %s (%d entries)\n", rootBuf, n);
+                        library->scanDirectoryAsync(rootBuf);
+                        if (appConfig) {
+                            appConfig->set("library_root", rootBuf);
+                            appConfig->save();
+                        }
+                        logger.AddLog("Library: scanning %s\n", rootBuf);
                         selectedIdx = -1;
                     }
                 }
@@ -898,9 +923,28 @@ int main(int argc, char* argv[]) {
                 ImGui::PopItemWidth();
                 ImGui::SameLine();
                 if (ImGui::Button("Scan")) {
-                    int n = library->scanDirectory(rootBuf);
-                    logger.AddLog("Library: scanned %s (%d entries)\n", rootBuf, n);
+                    library->scanDirectoryAsync(rootBuf);
+                    if (appConfig) {
+                        appConfig->set("library_root", rootBuf);
+                        appConfig->save();
+                    }
+                    logger.AddLog("Library: scanning %s\n", rootBuf);
                     selectedIdx = -1;
+                }
+
+                // Scan progress indicator.
+                if (library->isScanning()) {
+                    const auto done  = library->scanProgress();
+                    const auto total = library->scanTotal();
+                    if (total > 0) {
+                        char overlay[64];
+                        std::snprintf(overlay, sizeof(overlay),
+                                      "Scanning %zu / %zu", done, total);
+                        ImGui::ProgressBar((float)done / (float)total,
+                                           ImVec2(-1, 0), overlay);
+                    } else {
+                        ImGui::TextDisabled("Scanning...");
+                    }
                 }
 
                 ImGui::PushItemWidth(-1);

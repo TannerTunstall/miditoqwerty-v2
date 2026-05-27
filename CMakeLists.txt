@@ -113,6 +113,7 @@ set(MTQ_CORE_SOURCES
     src/midi/MidiLibrary.cpp
     src/midi/Playlist.cpp
     src/midi/Concert.cpp
+    src/app/AppConfig.cpp
     src/platform/InputBackend.cpp
     imgui/backends/imgui_impl_sdl.cpp)
 

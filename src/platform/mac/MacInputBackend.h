@@ -27,8 +27,13 @@ public:
     void releaseAll() override;
 
 private:
-    // 0 = Off (OS-aware), 1 = Emulator (layout-bypass, kVK_ANSI_*)
+    // 0 = OS-aware (UCKeyTranslate reverse map for current keyboard layout)
+    // 1 = Native (kVK_ANSI_* hardcoded table, layout-bypass — Roblox default)
     int mode = 1;
+
+    // Rebuilds layoutMap_ from the current TIS keyboard layout. Called once
+    // at construction and on demand when the user toggles into OS-aware mode.
+    void rebuildLayoutMap();
 
     // 0 = first entry which is always "(active foreground)" -> pid 0
     int targetIndex = 0;

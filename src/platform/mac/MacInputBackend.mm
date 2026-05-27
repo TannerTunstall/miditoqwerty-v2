@@ -18,7 +18,13 @@ namespace {
 struct KeyInfo { CGKeyCode code; bool shift; bool valid; };
 static constexpr KeyInfo kBad = {0, false, false};
 
-KeyInfo lookupKey(char c) {
+// OS-aware reverse layout map. Indexed by ASCII char (0-127). Populated from
+// UCKeyTranslate by iterating every CGKeyCode and recording which physical
+// key + modifier produces each printable character on the *current* keyboard
+// layout. Used when MacInputBackend::mode == 0 ("OS-aware").
+KeyInfo gLayoutMap[128] = {};
+
+KeyInfo lookupKeyNative(char c) {
     switch (c) {
         // Digits
         case '0': return {kVK_ANSI_0, false, true};
@@ -107,6 +113,21 @@ KeyInfo lookupKey(char c) {
     }
 }
 
+// OS-aware lookup: consult the layout map populated from UCKeyTranslate.
+// Falls back to the Native table for chars the layout doesn't produce (rare
+// for ASCII on most Latin layouts, but possible for unusual layouts).
+KeyInfo lookupKeyOSAware(char c) {
+    if ((unsigned char)c < 128) {
+        KeyInfo k = gLayoutMap[(unsigned char)c];
+        if (k.valid) return k;
+    }
+    return lookupKeyNative(c);
+}
+
+KeyInfo lookupKey(char c, int mode) {
+    return mode == 0 ? lookupKeyOSAware(c) : lookupKeyNative(c);
+}
+
 void postKey(CGKeyCode code, bool keyDown, CGEventFlags flags, int targetPid) {
     CGEventRef ev = CGEventCreateKeyboardEvent(NULL, code, keyDown);
     if (!ev) return;
@@ -145,6 +166,66 @@ MacInputBackend::MacInputBackend() {
             "                  enable this binary, then restart the app.\n"
             "                  Until then, sendKey* calls will be silently dropped by macOS.\n");
     }
+    rebuildLayoutMap();
+}
+
+void MacInputBackend::rebuildLayoutMap() {
+    // Wipe the previous map.
+    for (auto& k : gLayoutMap) k = kBad;
+
+    TISInputSourceRef src = TISCopyCurrentKeyboardLayoutInputSource();
+    if (!src) {
+        std::fprintf(stderr, "[MacInputBackend] No keyboard layout source — OS-aware mode will fall back to Native.\n");
+        return;
+    }
+    CFDataRef layoutData = (CFDataRef)TISGetInputSourceProperty(
+        src, kTISPropertyUnicodeKeyLayoutData);
+    if (!layoutData) {
+        CFRelease(src);
+        std::fprintf(stderr, "[MacInputBackend] Layout has no Unicode data — OS-aware mode will fall back to Native.\n");
+        return;
+    }
+    const UCKeyboardLayout* layout =
+        (const UCKeyboardLayout*)CFDataGetBytePtr(layoutData);
+    UInt32 kbdType = LMGetKbdType();
+
+    int populated = 0;
+    for (CGKeyCode keycode = 0; keycode < 128; ++keycode) {
+        for (int shift = 0; shift < 2; ++shift) {
+            UInt32 modifierKeyState = shift ? ((shiftKey >> 8) & 0xFF) : 0;
+            UInt32 deadKeyState = 0;
+            UniCharCount actualLength = 0;
+            UniChar chars[8] = {0};
+            OSStatus s = UCKeyTranslate(
+                layout, keycode, kUCKeyActionDisplay, modifierKeyState,
+                kbdType, kUCKeyTranslateNoDeadKeysMask,
+                &deadKeyState, 8, &actualLength, chars);
+            if (s != noErr || actualLength == 0) continue;
+            UniChar uc = chars[0];
+            if (uc > 127) continue;             // ASCII only
+            if (uc < 32 || uc == 127) continue; // skip control chars
+            unsigned char idx = (unsigned char)uc;
+            // First match wins. With shift=0 iterated first, unshifted chars
+            // get priority — letters land as {their key, false}, then their
+            // shifted uppercase lands as {same key, true} on the next pass.
+            if (!gLayoutMap[idx].valid) {
+                gLayoutMap[idx] = {keycode, shift != 0, true};
+                ++populated;
+            }
+        }
+    }
+    CFRelease(src);
+
+    // Space is special — sustain pedal always uses kVK_Space regardless of
+    // layout. UCKeyTranslate gives it as Space on every sane layout, but be
+    // defensive.
+    if (!gLayoutMap[' '].valid) {
+        gLayoutMap[' '] = {(CGKeyCode)kVK_Space, false, true};
+    }
+
+    std::fprintf(stderr,
+        "[MacInputBackend] OS-aware layout map: %d printable ASCII chars resolved.\n",
+        populated);
 }
 
 // Why explicit modifier press/release instead of CGEventSetFlags:
@@ -164,7 +245,7 @@ MacInputBackend::MacInputBackend() {
 // it later, exactly like the Windows code in inpututils.cpp does.
 
 void MacInputBackend::sendKeyDown(char c) {
-    KeyInfo k = lookupKey(c);
+    KeyInfo k = lookupKey(c, mode);
     if (!k.valid) return;
     if (k.shift) {
         postKey((CGKeyCode)kVK_Shift, true, 0, targetPid);
@@ -178,13 +259,13 @@ void MacInputBackend::sendKeyDown(char c) {
 void MacInputBackend::sendKeyUp(char c, char /*location*/) {
     // Mac CGKeyCode is physical-position; same code releases whether the press
     // was shifted or not, so we don't need findIndex-style char translation.
-    KeyInfo k = lookupKey(c);
+    KeyInfo k = lookupKey(c, mode);
     if (!k.valid) return;
     postKey(k.code, false, 0, targetPid);
 }
 
 void MacInputBackend::sendOutOfRangeKey(char c) {
-    KeyInfo k = lookupKey(c);
+    KeyInfo k = lookupKey(c, mode);
     if (!k.valid) return;
     postKey((CGKeyCode)kVK_Control, true, 0, targetPid);
     if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0, targetPid);
@@ -197,7 +278,7 @@ void MacInputBackend::sendOutOfRangeKey(char c) {
 }
 
 void MacInputBackend::setVelocity(char c) {
-    KeyInfo k = lookupKey(c);
+    KeyInfo k = lookupKey(c, mode);
     if (!k.valid) return;
     postKey((CGKeyCode)kVK_Option, true, 0, targetPid);
     if (k.shift) postKey((CGKeyCode)kVK_Shift, true, 0, targetPid);
@@ -210,22 +291,36 @@ void MacInputBackend::setVelocity(char c) {
 }
 
 std::vector<std::string> MacInputBackend::availableModes() const {
-    // macOS collapses Windows' Set 1 / Set 2 / QWERTZ into a single mode
-    // because CGKeyCode is already physical-position (layout-bypass). The
-    // Windows-style OS-aware mode would be UCKeyTranslate-based on Mac;
-    // not implemented yet because Roblox needs the physical-position path.
-    return { "Native (kVK)" };
+    // Two modes, matching the spirit of the Windows backend:
+    //   0 OS-aware — UCKeyTranslate reverse lookup against the current
+    //     keyboard layout (so '!' goes through whichever physical key + mod
+    //     produces '!' on the user's layout). Use this when the receiving
+    //     app honours the macOS keyboard layout (TextEdit, browsers, etc.).
+    //   1 Native — hardcoded kVK_ANSI_* table, layout-bypass. Use this for
+    //     Roblox and anything else that reads physical keys directly.
+    // macOS doesn't have the Set 1 / Set 2 / QWERTZ distinction that
+    // Windows exposes — CGKeyCode is already physical-position.
+    return { "OS-aware (layout)", "Native (kVK)" };
 }
 
 std::vector<std::string> MacInputBackend::modeTooltips() const {
     return {
+        "Uses UCKeyTranslate against the current macOS keyboard layout.\n"
+        "Equivalent to Windows 'Off (OS-aware)' — works in TextEdit,\n"
+        "browsers, and other apps that respect the layout.",
         "Physical-position keys (kVK_ANSI_*), layout-bypass.\n"
-        "Equivalent to Windows Set 1; what Roblox expects."
+        "Equivalent to Windows 'Set 1' — what Roblox expects."
     };
 }
 
-void MacInputBackend::setMode(int /*modeIndex*/) {
-    mode = 0;  // single mode available, ignore index
+void MacInputBackend::setMode(int modeIndex) {
+    if (modeIndex < 0 || modeIndex > 1) modeIndex = 1;  // clamp; default Native
+    mode = modeIndex;
+    if (mode == 0) {
+        // Refresh the layout map in case the user changed their input source
+        // after construction.
+        rebuildLayoutMap();
+    }
 }
 
 int MacInputBackend::currentMode() const { return mode; }
