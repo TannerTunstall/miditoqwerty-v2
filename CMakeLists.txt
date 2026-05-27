@@ -86,6 +86,8 @@ set(MTQ_CORE_SOURCES
     src/core/NoteRouter.cpp
     src/midi/MidiFilePlayer.cpp
     src/midi/MidiLibrary.cpp
+    src/midi/Playlist.cpp
+    src/midi/Concert.cpp
     src/platform/InputBackend.cpp
     imgui/backends/imgui_impl_sdl.cpp)
 

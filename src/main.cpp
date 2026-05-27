@@ -29,6 +29,8 @@
 #include "core/NoteRouter.h"
 #include "midi/MidiFilePlayer.h"
 #include "midi/MidiLibrary.h"
+#include "midi/Playlist.h"
+#include "midi/Concert.h"
 
 #include "GL/gl3w.h"
 
@@ -91,6 +93,8 @@ std::unique_ptr<IInputBackend> input;
 std::unique_ptr<NoteRouter> noteRouter;
 std::unique_ptr<MidiFilePlayer> filePlayer;
 std::unique_ptr<MidiLibrary> library;
+std::unique_ptr<PlaylistManager> playlists;
+std::unique_ptr<Concert> concert;
 std::unique_ptr<IHotkeyService> hotkeys;
 bool overlayHidden = false;
 
@@ -168,6 +172,7 @@ int main(int argc, char* argv[]) {
     noteRouter->bindSettings(&enableOutput, &eightyeightkey, &sustain, &velocity, &sustainCutoff);
     filePlayer = std::make_unique<MidiFilePlayer>(noteRouter.get(), &piano, &logger);
     library    = std::make_unique<MidiLibrary>();
+    concert    = std::make_unique<Concert>(filePlayer.get(), &logger);
 
     // Default library root. Platform-conventional location; the user can
     // change it at runtime via the Library tab's Browse button. No persistence
@@ -188,6 +193,19 @@ int main(int argc, char* argv[]) {
             // yet, so the UI shows the suggested location.
             library->scanDirectory(defaultRoot);  // no-op if dir absent
         }
+    }
+
+    // Default playlists directory: ~/Documents/miditoqwerty/playlists/
+    {
+        std::string defaultPlRoot;
+        if (const char* home = std::getenv("HOME")) {
+            defaultPlRoot = std::string(home) + "/Documents/miditoqwerty/playlists";
+        } else if (const char* userprofile = std::getenv("USERPROFILE")) {
+            defaultPlRoot = std::string(userprofile) + "/Documents/miditoqwerty/playlists";
+        }
+        playlists = std::make_unique<PlaylistManager>(defaultPlRoot);
+        int n = playlists->load();
+        printf("Playlists: loaded %d from %s\n", n, defaultPlRoot.c_str());
     }
 
     if (autoLoadPath) {
@@ -275,6 +293,14 @@ int main(int argc, char* argv[]) {
                 // on hide/show, and the overlay must keep floating over Roblox.
                 configureWindowOverlay(window);
             }
+        });
+        // Panic: stop concert + player, release all held keys. Use when
+        // something gets stuck during unattended concert playback.
+        hotkeys->registerPanic([]() {
+            logger.AddLog("PANIC: stopping all playback\n");
+            if (concert)    concert->stop();
+            if (filePlayer) filePlayer->stop();
+            if (noteRouter) noteRouter->releaseAll();
         });
     }
 
@@ -423,6 +449,9 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+
+        // Drive autoplay; no-op when concert isn't running.
+        if (concert) concert->tick();
 
         // Start the Dear ImGui frame
         ImGui_ImplOpenGL3_NewFrame();
@@ -816,6 +845,10 @@ int main(int argc, char* argv[]) {
             ImGui::EndTabItem();
             }
 
+            // Shared between Library + Playlists tabs: the name of the playlist
+            // that "Add to Playlist" actions should target.
+            static std::string activePlaylistName;
+
             // ---- Library tab ---------------------------------------------
             if (ImGui::BeginTabItem("Library")) {
                 static char rootBuf[1024] = {0};
@@ -875,6 +908,26 @@ int main(int argc, char* argv[]) {
                             logger.AddLog("Library: playing %s\n", sel.title.c_str());
                         }
                     }
+                    if (!activePlaylistName.empty()) {
+                        ImGui::SameLine();
+                        char addLbl[256];
+                        std::snprintf(addLbl, sizeof(addLbl), "Add to '%s'",
+                                      activePlaylistName.c_str());
+                        if (ImGui::Button(addLbl)) {
+                            if (auto* pl = playlists->find(activePlaylistName)) {
+                                PlaylistEntry pe;
+                                pe.libraryPath = sel.path;
+                                pe.title = sel.title;
+                                pl->entries.push_back(std::move(pe));
+                                playlists->save(*pl);
+                                logger.AddLog("Playlist '%s': added %s\n",
+                                              activePlaylistName.c_str(), sel.title.c_str());
+                            }
+                        }
+                    } else {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(no active playlist)");
+                    }
                 } else {
                     ImGui::TextDisabled("(select an entry)");
                 }
@@ -916,6 +969,130 @@ int main(int argc, char* argv[]) {
                 }
                 ImGui::EndChild();
 
+                ImGui::EndTabItem();
+            }
+
+            // ---- Playlists tab -------------------------------------------
+            if (ImGui::BeginTabItem("Playlists")) {
+                auto& all = playlists->playlists();
+
+                // Active-playlist selector + create / delete.
+                static char newNameBuf[128] = {0};
+                const char* curName = activePlaylistName.empty()
+                    ? "(none)" : activePlaylistName.c_str();
+                ImGui::PushItemWidth(-180.0f);
+                if (ImGui::BeginCombo("##pl_select", curName)) {
+                    if (ImGui::Selectable("(none)", activePlaylistName.empty())) {
+                        activePlaylistName.clear();
+                    }
+                    for (auto& p : all) {
+                        bool sel = (activePlaylistName == p.name);
+                        if (ImGui::Selectable(p.name.c_str(), sel)) {
+                            activePlaylistName = p.name;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::PopItemWidth();
+                ImGui::SameLine();
+                if (ImGui::Button("Delete") && !activePlaylistName.empty()) {
+                    playlists->remove(activePlaylistName);
+                    activePlaylistName.clear();
+                }
+
+                ImGui::PushItemWidth(-90.0f);
+                ImGui::InputTextWithHint("##pl_new", "new playlist name",
+                                         newNameBuf, sizeof(newNameBuf));
+                ImGui::PopItemWidth();
+                ImGui::SameLine();
+                if (ImGui::Button("Create") && newNameBuf[0]) {
+                    if (auto* p = playlists->createNew(newNameBuf)) {
+                        activePlaylistName = p->name;
+                        newNameBuf[0] = '\0';
+                    }
+                }
+
+                // Active playlist body.
+                Playlist* active = activePlaylistName.empty()
+                    ? nullptr : playlists->find(activePlaylistName);
+                if (active) {
+                    ImGui::Separator();
+                    ImGui::Text("Tracks (%zu)", active->entries.size());
+                    if (active->entries.empty()) {
+                        ImGui::TextDisabled("Empty. Use the Library tab and "
+                                            "click 'Add to ...' on entries.");
+                    }
+                    int removeIdx = -1;
+                    for (size_t i = 0; i < active->entries.size(); ++i) {
+                        auto& e = active->entries[i];
+                        ImGui::PushID((int)i);
+                        char buf[640];
+                        std::snprintf(buf, sizeof(buf), "%zu. %s",
+                                      i + 1,
+                                      e.title.empty() ? e.libraryPath.c_str() : e.title.c_str());
+                        ImGui::Selectable(buf);
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("^") && i > 0) {
+                            std::swap(active->entries[i], active->entries[i-1]);
+                            playlists->save(*active);
+                            ImGui::PopID();
+                            continue;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("v") && i + 1 < active->entries.size()) {
+                            std::swap(active->entries[i], active->entries[i+1]);
+                            playlists->save(*active);
+                            ImGui::PopID();
+                            continue;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("x")) removeIdx = (int)i;
+                        ImGui::PopID();
+                    }
+                    if (removeIdx >= 0) {
+                        active->entries.erase(active->entries.begin() + removeIdx);
+                        playlists->save(*active);
+                    }
+
+                    // Concert controls.
+                    ImGui::Separator();
+                    auto& ccfg = concert->config();
+                    ImGui::SliderFloat("Gap (s)", &ccfg.gapSeconds, 0.0f, 30.0f, "%.1f");
+                    const char* loopLabels[] = {"Off", "Repeat all", "Repeat one", "Shuffle"};
+                    int loopIdx = (int)ccfg.loopMode;
+                    if (ImGui::Combo("Loop", &loopIdx, loopLabels, IM_ARRAYSIZE(loopLabels))) {
+                        ccfg.loopMode = (Concert::LoopMode)loopIdx;
+                    }
+
+                    if (concert->isRunning()) {
+                        if (ImGui::Button("Stop concert")) concert->stop();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Prev"))         concert->previous();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Next"))         concert->next();
+                        const auto& cp = concert->currentPlaylist();
+                        size_t idx = concert->currentIndex();
+                        if (idx < cp.entries.size()) {
+                            ImGui::Text("Playing %zu / %zu — %s",
+                                idx + 1, cp.entries.size(),
+                                cp.entries[idx].title.empty()
+                                    ? cp.entries[idx].libraryPath.c_str()
+                                    : cp.entries[idx].title.c_str());
+                        }
+                    } else {
+                        bool canPlay = !active->entries.empty();
+                        if (canPlay) {
+                            if (ImGui::Button("Play All (concert)")) concert->start(*active);
+                        } else {
+                            ImGui::TextDisabled("(add tracks above to enable concert)");
+                        }
+                    }
+                    ImGui::TextDisabled("Panic hotkey: Cmd+Shift+P (Mac) / Ctrl+Alt+P (Win)");
+                } else {
+                    ImGui::TextWrapped(
+                        "Pick or create a playlist above, then add tracks from "
+                        "the Library tab.");
+                }
                 ImGui::EndTabItem();
             }
 
@@ -969,8 +1146,10 @@ int main(int argc, char* argv[]) {
     // Cleanup
     midiThreadExitSignal.set_value();
     midithread.join();
+    if (concert)    concert->stop();
     if (filePlayer) filePlayer->stop();
     if (noteRouter) noteRouter->releaseAll();
+    concert.reset();
     filePlayer.reset();  // join scheduler thread before backend/router die
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();

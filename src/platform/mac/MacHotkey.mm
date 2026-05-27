@@ -10,6 +10,8 @@ namespace {
 
 constexpr UInt32 kToggleSignature = 'mtq1';  // four-char OSType
 constexpr UInt32 kToggleId        = 1;
+constexpr UInt32 kPanicSignature  = 'mtq2';
+constexpr UInt32 kPanicId         = 2;
 
 class MacHotkeyService : public IHotkeyService {
 public:
@@ -19,6 +21,10 @@ public:
         if (hotkeyRef) {
             UnregisterEventHotKey(hotkeyRef);
             hotkeyRef = nullptr;
+        }
+        if (panicRef) {
+            UnregisterEventHotKey(panicRef);
+            panicRef = nullptr;
         }
         if (handlerRef) {
             RemoveEventHandler(handlerRef);
@@ -59,6 +65,30 @@ public:
         return true;
     }
 
+    bool registerPanic(Callback cb) override {
+        panicCb = std::move(cb);
+
+        if (!handlerRef) {
+            EventTypeSpec spec = { kEventClassKeyboard, kEventHotKeyPressed };
+            OSStatus s = InstallApplicationEventHandler(
+                &MacHotkeyService::handlerThunk, 1, &spec, this, &handlerRef);
+            if (s != noErr) return false;
+        }
+
+        EventHotKeyID id = { kPanicSignature, kPanicId };
+        // Cmd+Shift+P. Same safe-modifier rationale as toggle.
+        OSStatus s = RegisterEventHotKey(
+            kVK_ANSI_P, cmdKey | shiftKey,
+            id, GetApplicationEventTarget(), 0, &panicRef);
+        if (s != noErr) {
+            std::fprintf(stderr, "[MacHotkey] RegisterEventHotKey (panic) failed (%d)\n", (int)s);
+            panicRef = nullptr;
+            return false;
+        }
+        std::fprintf(stderr, "[MacHotkey] Panic hotkey registered: Cmd+Shift+P\n");
+        return true;
+    }
+
     void handleSDLSysWMEvent(const SDL_Event&) override {
         // Mac dispatches via Carbon's event chain, not SDL's syswm pipeline.
     }
@@ -71,12 +101,16 @@ private:
         auto* self = static_cast<MacHotkeyService*>(userData);
         if (id.signature == kToggleSignature && id.id == kToggleId && self->toggleCb) {
             self->toggleCb();
+        } else if (id.signature == kPanicSignature && id.id == kPanicId && self->panicCb) {
+            self->panicCb();
         }
         return noErr;
     }
 
     Callback toggleCb;
-    EventHotKeyRef    hotkeyRef = nullptr;
+    Callback panicCb;
+    EventHotKeyRef    hotkeyRef  = nullptr;
+    EventHotKeyRef    panicRef   = nullptr;
     EventHandlerRef   handlerRef = nullptr;
 };
 

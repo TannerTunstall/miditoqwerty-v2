@@ -23,6 +23,10 @@ public:
     // Windows returns ERROR_HOTKEY_ALREADY_REGISTERED).
     virtual bool registerToggle(Callback cb) = 0;
 
+    // Bind the panic hotkey: instant "stop everything, release all keys".
+    // Critical for unattended concert mode in case something gets stuck.
+    virtual bool registerPanic(Callback cb) = 0;
+
     // Windows only: SDL routes the raw Win32 message here via SDL_SYSWMEVENT.
     // Mac implementation ignores the argument because RegisterEventHotKey
     // dispatches through Carbon's event handler chain, not SDL.

@@ -9,7 +9,8 @@
 
 namespace {
 
-constexpr int kToggleHotkeyId = 0xB10C;  // arbitrary cookie value
+constexpr int kToggleHotkeyId = 0xB10C;  // arbitrary cookie values
+constexpr int kPanicHotkeyId  = 0xB10D;
 
 class WindowsHotkeyService : public IHotkeyService {
 public:
@@ -20,8 +21,9 @@ public:
     }
 
     ~WindowsHotkeyService() override {
-        if (registered && hwnd) {
-            UnregisterHotKey(hwnd, kToggleHotkeyId);
+        if (hwnd) {
+            if (toggleRegistered) UnregisterHotKey(hwnd, kToggleHotkeyId);
+            if (panicRegistered)  UnregisterHotKey(hwnd, kPanicHotkeyId);
         }
     }
 
@@ -39,12 +41,31 @@ public:
         // Default: Ctrl+Alt+H. Bypasses common conflicts (Win+H is dictation).
         if (!RegisterHotKey(hwnd, kToggleHotkeyId, MOD_CONTROL | MOD_ALT, 'H')) {
             std::fprintf(stderr,
-                "[WinHotkey] RegisterHotKey failed (GetLastError=%lu)\n",
+                "[WinHotkey] RegisterHotKey (toggle) failed (GetLastError=%lu)\n",
                 GetLastError());
             return false;
         }
-        registered = true;
+        toggleRegistered = true;
         std::fprintf(stderr, "[WinHotkey] Toggle hotkey registered: Ctrl+Alt+H\n");
+        return true;
+    }
+
+    bool registerPanic(Callback cb) override {
+        panicCb = std::move(cb);
+        if (!hwnd) {
+            SDL_SysWMinfo info;
+            SDL_VERSION(&info.version);
+            if (!SDL_GetWindowWMInfo(window, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return false;
+            hwnd = info.info.win.window;
+        }
+        if (!RegisterHotKey(hwnd, kPanicHotkeyId, MOD_CONTROL | MOD_ALT, 'P')) {
+            std::fprintf(stderr,
+                "[WinHotkey] RegisterHotKey (panic) failed (GetLastError=%lu)\n",
+                GetLastError());
+            return false;
+        }
+        panicRegistered = true;
+        std::fprintf(stderr, "[WinHotkey] Panic hotkey registered: Ctrl+Alt+P\n");
         return true;
     }
 
@@ -52,16 +73,19 @@ public:
         if (ev.type != SDL_SYSWMEVENT) return;
         const SDL_SysWMmsg* msg = ev.syswm.msg;
         if (!msg || msg->subsystem != SDL_SYSWM_WINDOWS) return;
-        if (msg->msg.win.msg == WM_HOTKEY && (int)msg->msg.win.wParam == kToggleHotkeyId) {
-            if (toggleCb) toggleCb();
-        }
+        if (msg->msg.win.msg != WM_HOTKEY) return;
+        const int id = (int)msg->msg.win.wParam;
+        if (id == kToggleHotkeyId && toggleCb) toggleCb();
+        else if (id == kPanicHotkeyId && panicCb) panicCb();
     }
 
 private:
     SDL_Window* window = nullptr;
     HWND hwnd = nullptr;
-    bool registered = false;
+    bool toggleRegistered = false;
+    bool panicRegistered  = false;
     Callback toggleCb;
+    Callback panicCb;
 };
 
 }  // namespace
