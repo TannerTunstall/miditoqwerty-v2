@@ -33,7 +33,12 @@ void Piano::draw(bool *show, bool windowsEditable, ImU32 noteColor) {
 
     ImDrawList *draw_list = ImGui::GetWindowDrawList();
     ImVec2 p = ImGui::GetCursorScreenPos();
-    int width = 8; // editable
+    // Fill the available window width across all 52 white keys. Floors so we
+    // don't draw past the right edge; minimum keeps the piano usable at very
+    // small window sizes.
+    const float avail = ImGui::GetContentRegionAvail().x;
+    int width = (int)(avail / 52.0f);
+    if (width < 4) width = 4;
     int cur_key = 21;
     for (int key = 0; key < 52; key++) {
         ImU32 col = White;

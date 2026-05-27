@@ -206,9 +206,12 @@ int main(int argc, char* argv[]) {
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL        |
                                                      SDL_WINDOW_ALLOW_HIGHDPI |
+                                                     SDL_WINDOW_RESIZABLE     |
                                                      SDL_WINDOW_ALWAYS_ON_TOP );
+    // Default size bumped from 435x550 so the Settings panel doesn't need
+    // scrolling out-of-the-box. Window is resizable so users can shrink it.
     window = SDL_CreateWindow("Midi to Qwerty", SDL_WINDOWPOS_CENTERED,
-                                          SDL_WINDOWPOS_CENTERED, 435, 550, window_flags);
+                                          SDL_WINDOWPOS_CENTERED, 520, 720, window_flags);
     SDL_GLContext gl_context = SDL_GL_CreateContext(window);
     SDL_GL_MakeCurrent(window, gl_context);
     SDL_GL_SetSwapInterval(1); // Enable vsync
@@ -252,6 +255,28 @@ int main(int argc, char* argv[]) {
 
     fflush(stdout);
 
+    // HiDPI: rasterize fonts at the framebuffer's true pixel density (2x on a
+    // Retina display) and ask ImGui to display them at 1/scale, so the visual
+    // size stays the same as on a 1x display but the glyph atlas is sharp.
+    // Without this, fonts appear blurry on macOS Retina.
+    int win_w_pt = 0, win_h_pt = 0, win_w_px = 0, win_h_px = 0;
+    SDL_GetWindowSize(window, &win_w_pt, &win_h_pt);
+    SDL_GL_GetDrawableSize(window, &win_w_px, &win_h_px);
+    const float dpiScale = (win_w_pt > 0 && win_w_px > 0)
+        ? (float)win_w_px / (float)win_w_pt
+        : 1.0f;
+    printf("Display scale: %.2fx (window %dx%d pt, drawable %dx%d px)\n",
+           dpiScale, win_w_pt, win_h_pt, win_w_px, win_h_px);
+
+    // Default font, rasterized at the scaled size.
+    {
+        ImFontConfig cfg;
+        cfg.SizePixels = 13.0f * dpiScale;
+        cfg.OversampleH = 3;
+        cfg.OversampleV = 1;
+        io.Fonts->AddFontDefault(&cfg);
+    }
+
     // Load fonts. The original release ships a fonts/ directory alongside the
     // binary; tolerate it being absent (built-from-source case) so we don't
     // throw out of recursive_directory_iterator on launch.
@@ -269,12 +294,15 @@ int main(int argc, char* argv[]) {
 
                 printf("Font found: %s\n", fullPath.c_str());
 
-                ImGui::GetIO().Fonts->AddFontFromFileTTF(fullPath.c_str(), 13);
+                io.Fonts->AddFontFromFileTTF(fullPath.c_str(), 13.0f * dpiScale);
             }
         }
     } else {
         printf("No fonts/ directory found; using ImGui default font only.\n");
     }
+
+    // Counter-scale display so the rasterized-at-2x glyphs render at 1x visual size.
+    io.FontGlobalScale = 1.0f / dpiScale;
 
     fflush(stdout);
 
@@ -298,11 +326,11 @@ int main(int argc, char* argv[]) {
     }
 
     if (smallLayout) {
-        SDL_SetWindowSize(window, 435, 315);
+        SDL_SetWindowSize(window, 520, 420);
         printf("Loaded small layout\n");
     }
     else {
-        SDL_SetWindowSize(window, 435, 550);
+        SDL_SetWindowSize(window, 520, 720);
         printf("Loaded tall layout\n");
     }
 
@@ -359,7 +387,24 @@ int main(int argc, char* argv[]) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame(window);
         ImGui::NewFrame();
+
+        // Default window layout for the no-ini case (built-from-source). Reads
+        // the live SDL window size so resizing the host window rearranges the
+        // first-time layout proportionally. ImGui-saved positions still win on
+        // subsequent runs when layout_*.ini is present.
+        int sdlW = 0, sdlH = 0;
+        SDL_GetWindowSize(window, &sdlW, &sdlH);
+        const float layoutW = (float)sdlW;
+        const float layoutH = (float)sdlH;
+        const float midiH   = 82.0f;   // fits Playing: + Qwerty: lines at any DPI
+        const float kbdH    = smallLayout ? 80.0f : 100.0f;
+        const float midH    = layoutH - midiH - kbdH - 10.0f;
+        const float leftW   = layoutW * 0.46f;
+        const float rightW  = layoutW - leftW - 5.0f;
+
         if (show_midi_window) {
+            ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(layoutW, midiH), ImGuiCond_FirstUseEver);
             ImGui::Begin("Midi", NULL, POSSIBLYEDITABLE);
             std::ostringstream os;
             auto current_notes = piano.current_notes();
@@ -410,11 +455,15 @@ int main(int argc, char* argv[]) {
         }
 
         if (show_piano_window) {
+            ImGui::SetNextWindowPos(ImVec2(0, layoutH - kbdH), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(layoutW, kbdH), ImGuiCond_FirstUseEver);
             piano.draw(&show_piano_window, windowsEditable,
                 IM_COL32(gNoteColor.x * 255, gNoteColor.y * 255, gNoteColor.z * 255, 255));
         }
 
         {
+            ImGui::SetNextWindowPos(ImVec2(0, midiH + 5), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(leftW, midH), ImGuiCond_FirstUseEver);
             ImGui::Begin("Settings", NULL, POSSIBLYEDITABLE);
 
             ImGui::Text("Window settings");
@@ -448,12 +497,12 @@ int main(int argc, char* argv[]) {
                     if (ImGui::Selectable(layouts[n], is_selected)) {
                         current_item = layouts[n];
                         if (current_item == std::string("Small")) {
-                            SDL_SetWindowSize(window, 435, 310);
+                            SDL_SetWindowSize(window, 520, 420);
                             ImGui::LoadIniSettingsFromDisk("layout_small.ini");
                             smallLayout = true;
                         }
                         else if (current_item == std::string("Tall")) {
-                            SDL_SetWindowSize(window, 435, 550);
+                            SDL_SetWindowSize(window, 520, 720);
                             ImGui::LoadIniSettingsFromDisk("layout_tall.ini");
                             smallLayout = false;
                         }
@@ -587,7 +636,8 @@ int main(int argc, char* argv[]) {
         }
 
         {
-            ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowPos(ImVec2(leftW + 5, midiH + 5), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(rightW, midH), ImGuiCond_FirstUseEver);
             ImGui::Begin("Log", NULL, POSSIBLYEDITABLE);
             ImGui::End();
 
