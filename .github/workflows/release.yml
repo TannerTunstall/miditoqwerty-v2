@@ -1,0 +1,170 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # macOS arm64 (.app bundle)
+  # ---------------------------------------------------------------------------
+  build-macos:
+    name: Build macOS (arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Homebrew dependencies
+        run: brew install sdl2 portmidi
+
+      - name: Determine version string
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=master-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j
+
+      - name: Package as .app
+        run: |
+          bash scripts/package_macos.sh \
+            build/miditoqwerty \
+            miditoqwerty.app \
+            "${{ steps.version.outputs.version }}"
+
+      - name: Zip .app preserving metadata
+        run: ditto -c -k --sequesterRsrc --keepParent miditoqwerty.app miditoqwerty-macos-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miditoqwerty-macos-arm64
+          path: miditoqwerty-macos-arm64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Windows x64 (.exe + DLLs)
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-2022
+    env:
+      SDL2_VERSION: 2.32.10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Download SDL2 dev libs
+        shell: pwsh
+        run: |
+          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$env:SDL2_VERSION/SDL2-devel-$env:SDL2_VERSION-VC.zip"
+          Invoke-WebRequest -Uri $url -OutFile sdl2.zip
+          Expand-Archive sdl2.zip -DestinationPath .
+
+      - name: Build PortMidi from submodule
+        shell: pwsh
+        run: |
+          cd portmidi
+          cmake -B build -A x64 -DBUILD_SHARED_LIBS=ON
+          cmake --build build --config Release
+
+      - name: Configure miditoqwerty
+        shell: pwsh
+        run: |
+          $sdlDir = "${{ github.workspace }}\SDL2-$env:SDL2_VERSION"
+          $pmLib  = "${{ github.workspace }}\portmidi\build\Release\portmidi.lib"
+          $pmInc  = "${{ github.workspace }}\portmidi\pm_common"
+          $ptInc  = "${{ github.workspace }}\portmidi\porttime"
+          cmake -B build -A x64 `
+            -DSDL2_DIR="$sdlDir" `
+            -DPORTMIDI_LIBRARY="$pmLib" `
+            -DPORTMIDI_INCLUDE_DIR="$pmInc" `
+            -DPORTTIME_INCLUDE_DIR="$ptInc"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path miditoqwerty-windows-x64 | Out-Null
+          Copy-Item build/Release/miditoqwerty.exe miditoqwerty-windows-x64/
+          Copy-Item "SDL2-$env:SDL2_VERSION/lib/x64/SDL2.dll" miditoqwerty-windows-x64/
+          Copy-Item portmidi/build/Release/portmidi.dll miditoqwerty-windows-x64/
+          Compress-Archive -Path miditoqwerty-windows-x64 -DestinationPath miditoqwerty-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miditoqwerty-windows-x64
+          path: miditoqwerty-windows-x64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Release: every push to master refreshes a rolling "latest" pre-release;
+  # every v* tag creates a versioned stable release. PRs build but don't
+  # release (the `if:` gate).
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            TITLE="Release ${TAG}"
+            PRE_ARGS=()
+            NOTES="Stable release ${TAG} built from ${GITHUB_SHA}."
+          else
+            TAG="latest"
+            TITLE="Latest build (rolling)"
+            PRE_ARGS=(--prerelease)
+            NOTES=$'Auto-built from master at '"${GITHUB_SHA}"$'.\nThis release is overwritten on every push to master — pin to a v* tag if you want a fixed version.'
+            # Remove the previous "latest" so the new binaries are clean.
+            gh release delete latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          fi
+
+          gh release create "$TAG" "${PRE_ARGS[@]}" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            --target "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            artifacts/miditoqwerty-macos-arm64/miditoqwerty-macos-arm64.zip \
+            artifacts/miditoqwerty-windows-x64/miditoqwerty-windows-x64.zip

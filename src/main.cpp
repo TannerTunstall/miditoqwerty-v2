@@ -155,6 +155,25 @@ void pollCallback(PmTimestamp timestamp, uint8_t status, PmMessage Data1, PmMess
 }
 
 int main(int argc, char* argv[]) {
+    // When launched from a .app bundle the working directory is "/", which
+    // means settings.dat / log.txt / library scans all hit a read-only spot.
+    // Detect bundle launch via argv[0] and chdir to the user data dir.
+    if (argc > 0) {
+        std::string arg0 = argv[0];
+        if (arg0.find("/Contents/MacOS/") != std::string::npos) {
+            std::string dataDir;
+            if (const char* home = std::getenv("HOME")) {
+                dataDir = std::string(home) + "/Documents/miditoqwerty";
+            }
+            if (!dataDir.empty()) {
+                std::error_code ec;
+                std::filesystem::create_directories(dataDir, ec);
+                std::filesystem::current_path(dataDir, ec);
+                printf("Bundle launch: chdir to %s\n", dataDir.c_str());
+            }
+        }
+    }
+
     // Optional first-positional arg: path to a .mid to auto-load on startup.
     // Supports drag-and-drop on the binary and CLI testing.
     const char* autoLoadPath = (argc > 1) ? argv[1] : nullptr;
