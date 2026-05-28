@@ -114,5 +114,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+
+# Ad-hoc re-sign every dylib + the main binary + the bundle. install_name_tool
+# above invalidates whatever signature clang applied during the build, so
+# without this Apple Silicon's "must be signed" rule kicks in and the app
+# is reported as damaged when a downloaded copy is launched. Ad-hoc (--sign -)
+# is enough to pass that check; real Apple Developer ID notarization is a
+# separate concern and is not done here.
+for lib in "$APP/Contents/Frameworks/"*.dylib; do
+    [ -f "$lib" ] || continue
+    codesign --sign - --force --timestamp=none "$lib" >/dev/null 2>&1 || true
+done
+codesign --sign - --force --timestamp=none "$APP/Contents/MacOS/miditoqwerty" >/dev/null 2>&1 || true
+codesign --sign - --force --deep --timestamp=none "$APP" >/dev/null 2>&1 || true
+
 echo "Built $APP"
 echo "  frameworks: $(ls "$APP/Contents/Frameworks" 2>/dev/null | tr '\n' ' ')"
+echo "  signature : $(codesign -dv "$APP" 2>&1 | grep -E 'Signature=' || echo 'ad-hoc')"

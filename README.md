@@ -183,6 +183,15 @@ scripts/          Build / packaging helpers (package_macos.sh)
 
 ## Troubleshooting
 
+- **macOS: "miditoqwerty is damaged and can't be opened" (downloaded `.app`).**
+  Apple's Gatekeeper rejecting an unsigned download. After unzipping, run:
+  ```sh
+  xattr -dr com.apple.quarantine /path/to/miditoqwerty.app
+  ```
+  then launch as normal. The `.app` is ad-hoc signed (so it's allowed to run
+  on Apple Silicon), but it isn't notarized — that needs a paid Apple
+  Developer ID and is out of scope. The `xattr` step strips the
+  browser-quarantine flag from the bundle in one shot.
 - **macOS: nothing types into Roblox.** Confirm Accessibility permission is
   granted in *System Settings → Privacy & Security → Accessibility*. Confirm
   *Settings → Target App* is set to Roblox. Confirm *QWERTY Emulator* is
