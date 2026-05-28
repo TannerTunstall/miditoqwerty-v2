@@ -22,19 +22,47 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 # SDL2 lookup
-#   macOS / Linux: brew (or distro) installs SDL2 with a CMake config; let
-#       find_package locate it.
-#   Windows: the SDL2-devel-VC release does NOT ship SDL2Config.cmake, but
-#       does include the libs + headers under SDL2_DIR. Skip find_package when
-#       SDL2_DIR is set, and trust the manual paths used later for linking.
-if(WIN32 AND DEFINED SDL2_DIR AND NOT "${SDL2_DIR}" STREQUAL "")
+#   1. Try config-mode find_package first — works for vcpkg (static or
+#      dynamic), Homebrew, modern distro packages.
+#   2. Fall back to the legacy manual Windows path: SDL2_DIR pointing at an
+#      extracted SDL2-devel-VC release. Only used when the config-mode
+#      lookup fails and a SDL2_DIR has been set explicitly.
+#   3. Last resort: module-mode find_package for rare installs.
+#
+# MTQ_SDL2_LINK is a unified link spec — either CMake imported targets (vcpkg /
+# brew) or a list of .lib paths (legacy Windows). All link statements below
+# go through it.
+find_package(SDL2 CONFIG QUIET)
+
+if(NOT SDL2_FOUND AND WIN32 AND DEFINED SDL2_DIR AND NOT "${SDL2_DIR}" STREQUAL "")
     if(NOT EXISTS "${SDL2_DIR}/include/SDL.h")
         message(FATAL_ERROR "SDL2_DIR='${SDL2_DIR}' has no include/SDL.h — check the path.")
     endif()
     set(SDL2_INCLUDE_DIRS "${SDL2_DIR}/include")
+    set(MTQ_SDL2_LINK
+        ${SDL2_DIR}/lib/x64/SDL2.lib
+        ${SDL2_DIR}/lib/x64/SDL2main.lib)
+    set(MTQ_SDL2_DYNAMIC ON)
     message(STATUS "Using SDL2 from manually-set SDL2_DIR: ${SDL2_DIR}")
+elseif(SDL2_FOUND)
+    # Prefer the static target when both are exported (vcpkg static triplet
+    # ships both for convenience).
+    if(TARGET SDL2::SDL2-static)
+        set(MTQ_SDL2_LINK SDL2::SDL2-static)
+        message(STATUS "Linking SDL2 statically (SDL2::SDL2-static)")
+    elseif(TARGET SDL2::SDL2)
+        set(MTQ_SDL2_LINK SDL2::SDL2)
+        set(MTQ_SDL2_DYNAMIC ON)
+        message(STATUS "Linking SDL2 dynamically (SDL2::SDL2)")
+    else()
+        set(MTQ_SDL2_LINK ${SDL2_LIBRARIES})
+    endif()
+    if(TARGET SDL2::SDL2main)
+        list(APPEND MTQ_SDL2_LINK SDL2::SDL2main)
+    endif()
 else()
     find_package(SDL2 REQUIRED)
+    set(MTQ_SDL2_LINK ${SDL2_LIBRARIES})
 endif()
 
 find_package(PortMidi REQUIRED)
@@ -164,18 +192,22 @@ target_include_directories(miditoqwerty PRIVATE src imgui imgui/backends)
 # --- Linking ----------------------------------------------------------------
 
 if(WIN32)
-    # Original behaviour: link SDL2.lib by path. Keep for parity until we
-    # confirm the modern SDL2::SDL2 target works in the user's MSVC project.
+    # Static-link both SDL2 + PortMidi when the providers offer it (vcpkg
+    # x64-windows-static is the CI path). That produces a single .exe with
+    # no DLL dependencies. The legacy path with dynamic SDL2 still works —
+    # in that case CI / the user is responsible for shipping SDL2.dll +
+    # portmidi.dll alongside the binary.
     target_link_libraries(miditoqwerty
         ${PORTMIDI_LIBRARY}
-        ${SDL2_DIR}/lib/x64/SDL2.lib
-        ${SDL2_DIR}/lib/x64/SDL2main.lib
+        ${MTQ_SDL2_LINK}
         imgui
         gl3w
         midifile
         comdlg32                  # GetOpenFileNameA
         shell32                   # SHBrowseForFolder / SHGetPathFromIDList
         ole32                     # CoTaskMemFree
+        winmm                     # PortMidi (static) needs the Win32 multimedia API
+        version imm32 setupapi    # SDL2 static transitive deps
         ${CMAKE_DL_LIBS})
 elseif(APPLE)
     find_library(COCOA_FRAMEWORK Cocoa)
@@ -187,12 +219,7 @@ elseif(APPLE)
     find_library(COREGRAPHICS_FRAMEWORK CoreGraphics)
     find_library(COREFOUNDATION_FRAMEWORK CoreFoundation)
 
-    # Homebrew's modern SDL2 exports SDL2::SDL2; fall back to legacy variables.
-    if(TARGET SDL2::SDL2)
-        set(MTQ_SDL2_LINK SDL2::SDL2)
-    else()
-        set(MTQ_SDL2_LINK ${SDL2_LIBRARIES})
-    endif()
+    # MTQ_SDL2_LINK is already populated by the lookup block above.
 
     target_link_libraries(miditoqwerty
         ${PORTMIDI_LIBRARIES}

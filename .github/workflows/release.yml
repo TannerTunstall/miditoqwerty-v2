@@ -66,7 +66,7 @@ jobs:
     name: Build Windows (x64)
     runs-on: windows-2022
     env:
-      SDL2_VERSION: 2.32.10
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,44 +77,40 @@ jobs:
         with:
           arch: x64
 
-      - name: Download SDL2 dev libs
-        shell: pwsh
-        run: |
-          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$env:SDL2_VERSION/SDL2-devel-$env:SDL2_VERSION-VC.zip"
-          Invoke-WebRequest -Uri $url -OutFile sdl2.zip
-          Expand-Archive sdl2.zip -DestinationPath .
+      # Cache vcpkg downloads + installed packages so subsequent CI runs don't
+      # re-download / re-build SDL2 + PortMidi from source. Key is the
+      # vcpkg.json hash if we add one later; for now a fixed key works.
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg\installed
+            C:\vcpkg\downloads
+            C:\vcpkg\buildtrees
+          key: vcpkg-${{ env.VCPKG_DEFAULT_TRIPLET }}-sdl2-portmidi-v1
 
-      - name: Build PortMidi from submodule
+      - name: Install SDL2 + PortMidi as static via vcpkg
         shell: pwsh
         run: |
-          cd portmidi
-          cmake -B build -A x64 -DBUILD_SHARED_LIBS=ON
-          cmake --build build --config Release
+          vcpkg install sdl2 portmidi --triplet=$env:VCPKG_DEFAULT_TRIPLET
 
       - name: Configure miditoqwerty
         shell: pwsh
         run: |
-          $sdlDir = "${{ github.workspace }}\SDL2-$env:SDL2_VERSION"
-          $pmLib  = "${{ github.workspace }}\portmidi\build\Release\portmidi.lib"
-          $pmInc  = "${{ github.workspace }}\portmidi\pm_common"
-          $ptInc  = "${{ github.workspace }}\portmidi\porttime"
           cmake -B build -A x64 `
-            -DSDL2_DIR="$sdlDir" `
-            -DPORTMIDI_LIBRARY="$pmLib" `
-            -DPORTMIDI_INCLUDE_DIR="$pmInc" `
-            -DPORTTIME_INCLUDE_DIR="$ptInc"
+            -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
       - name: Build
         shell: pwsh
         run: cmake --build build --config Release
 
-      - name: Package zip
+      - name: Package zip (single-file .exe — no DLLs)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path miditoqwerty-windows-x64 | Out-Null
           Copy-Item build/Release/miditoqwerty.exe miditoqwerty-windows-x64/
-          Copy-Item "SDL2-$env:SDL2_VERSION/lib/x64/SDL2.dll" miditoqwerty-windows-x64/
-          Copy-Item portmidi/build/Release/portmidi.dll miditoqwerty-windows-x64/
           Compress-Archive -Path miditoqwerty-windows-x64 -DestinationPath miditoqwerty-windows-x64.zip
 
       - uses: actions/upload-artifact@v4
